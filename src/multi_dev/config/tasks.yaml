@@ -1,0 +1,638 @@
+repo_analysis_task:
+  description: >
+    在任何分工与执行设计之前，先基于仓库证据分析目标仓库。
+
+    产品需求：
+    {product_requirement}
+
+    项目上下文：
+    {project_context}
+
+    目标仓库根目录：
+    {repository_root}
+
+    仓库快照：
+    {repository_snapshot}
+
+    输出语言：
+    {output_language}
+
+    语言硬规则：
+    - 完整输出必须使用 {output_language}。
+    - 所有标题、表头、说明文字、项目符号解释都必须使用 {output_language}。
+    - 只有文件路径、命令、代码标识符、环境变量、字面量值、枚举常量可保留英文。
+    - 若主要解释文字为英文，则输出无效。
+
+    证据规则：
+    - 只允许基于仓库快照、可见文件、README 摘录与明确给定上下文发言。
+    - 每条 `已观察事实` 必须在同一条中附带简短证据标签：`依据：仓库快照`、`依据：README摘录`、
+      `依据：pyproject.toml`、`依据：可见文件路径`、`依据：未发现相关文件` 之一。
+    - README 中的“产品宣传”“功能清单”“理想能力”只能证明“项目宣称/目标定位”，不能单独证明“当前代码已经实现”；若代码文件不可见，必须写成 `项目宣称` 或 `需确认假设`。
+    - 若文件、模块、依赖、接口、测试、CI、GitHub 工作流、分支策略未明确可见，不得当成事实，只能标记为 `需确认假设` 或 `拟新增文件`。
+    - 若仓库快照只显示目录、未显示目录内具体文件，则只能描述目录级事实，严禁猜测该目录下的文件名、函数名、类名、接口名或配置名。
+    - 严禁使用“示例存在”“符合命名惯例”“通常会有”“推测为”“大概率有”之类表述把不可见文件包装成事实。
+    - 任何具体子文件路径，只有在仓库快照或给定文件内容中逐字出现时，才可标记为 `现有文件`。
+    - `AGENTS.md` 仅视为编码助手说明，不得当成业务权限模型或应用功能来源。
+    - 已安装的 CrewAI 版本是 `{crewai_version}`，不得引用其他版本。
+    - 在“建议挂载点”中，若你提出新路径或新文件，必须明确标记为 `拟新增文件` 或 `拟新增目录`，不得写成现状。
+
+    产出要求：
+    1. 产品目的，
+    2. 核心模块与模块边界，
+    3. 可见的执行入口与编排挂载点，
+    4. 与第二版 master/node 设计相关的现实约束，
+    5. 当前缺失但后续可能需要补上的能力。
+    控制在 500 词以内，强调证据与可执行性。
+  expected_output: >
+    一份 Markdown 分析，包含：产品目的、核心模块、架构信号、约束条件、建议挂载点。必须明确区分“已观察事实”和“需确认假设”，且每条“已观察事实”都要包含证据标签。
+  output_file: outputs/repo_analysis.md
+
+module_boundary_task:
+  description: >
+    根据仓库分析结果，把需求翻译成模块边界与执行挂载方案，为后续 issue 和 node 分工提供依据。
+
+    产品需求：
+    {product_requirement}
+
+    项目上下文：
+    {project_context}
+
+    输出语言：
+    {output_language}
+
+    语言硬规则：
+    - 完整输出必须使用 {output_language}。
+    - 只有文件路径、命令、代码标识符、环境变量、字面量值可保留英文。
+
+    约束：
+    - 不得把 GitHub 集成、sandbox、runner、PR 流程写成已经存在，除非仓库中明确可见。
+    - 必须区分 `现有文件`、`现有目录` 与 `拟新增文件`。
+    - 若仓库没有前端、测试、CI、Webhook 或 GitHub workflow 证据，必须写明 `未发现`。
+    - 若只看见目录、没看见目录内文件，禁止写出任何具体文件名、函数名、CLI 子命令或输出样例。
+    - 任何 `现有文件` 都必须来自本轮工具结果里的逐字路径；禁止根据目录名、模块语义、常见命名习惯或“应该会有”来补全 sibling 文件。
+    - 若某个模块关系不是由 `read_repo_file()` 中真实 import、调用或显式引用证明，只能写成 `需确认假设`，不得写成既定映射或既定依赖。
+    - 严禁使用“按目录约定补全”“按技术栈惯例可推断”“可作为增强起点所以视作关联文件”这类推理，把不可见或未引用文件写成事实。
+    - 允许提出 `拟新增文件`，但不得同时捏造与之配套的“现有 sibling 文件”作为依据。
+    - 已安装的 CrewAI 版本是 `{crewai_version}`，不得引用其他版本。
+
+    请产出：
+    1. 模块边界，
+    2. master 应该掌握的输入与输出，
+    3. node 可以安全接管的模块范围，
+    4. 本地 workspace 模拟最合理的挂载点，
+    5. 编排第二版仍需确认的开放问题。
+  expected_output: >
+    一份 Markdown 规划，包含：模块边界、主控挂载点、节点责任边界、workspace 设计、待确认问题。所有拟新增文件都必须显式标注为“拟新增文件”。
+  output_file: outputs/module_boundaries.md
+
+issue_drafting_task:
+  description: >
+    基于仓库分析和模块边界，输出可直接复制到 GitHub issue 的草稿包。
+
+    产品需求：
+    {product_requirement}
+
+    项目上下文：
+    {project_context}
+
+    输出语言：
+    {output_language}
+
+    bootstrap 模式：
+    {bootstrap_mode}
+
+    默认包名：
+    {bootstrap_package_name}
+
+    GitHub 集成：
+    {github_enabled}
+
+    CI/CD 集成：
+    {cicd_enabled}
+
+    GitHub owner / repo：
+    {github_owner}/{github_repo}
+
+    规则：
+    - 产出 2 到 4 张 issue 草稿。
+    - 每张 issue 必须包含：`Issue ID`、标题、目标、范围内、范围外、相关模块、涉及文件、依赖、验收标准、建议 node 类型。
+    - 涉及文件必须区分 `现有文件`、`拟新增文件`、`未发现需确认`。
+    - `建议 node 类型` 只能从 `backend_node`、`frontend_node`、`tester_node` 中选择，不得自造新 node 名称。
+    - `label`、`milestone`、`priority`、`branch name` 只能作为建议，不得写成仓库现状。
+    - 不得编造不存在的函数、接口、页面、测试或 GitHub 配置。
+    - 不得把目录内不可见文件名写成 `现有文件`；例如，若快照只显示 `web-flask/algo/document/` 目录，则不得擅自写出 `__init__.py`、`parser.py` 等具体文件名。
+    - 不得在验收标准、输出样例、JSON/YAML 示例中嵌入不可见的现有文件名、函数名或字段值。
+    - 若某条 issue 依赖某个 `现有文件`，必须能在本轮工具输出中指出其逐字路径，且若你声称“文件 A 依赖文件 B”，必须有 `read_repo_file(file A)` 中的真实 import、调用或显式引用作为依据。
+    - 不得因为某文件“同目录存在”就把它写成当前 issue 的依赖、输入或验收对象。
+    - 若需要举例路径但没有直接证据，请改写成目录级范围或 `拟新增文件`，不要硬写具体文件名。
+    - 若 `bootstrap_mode` 为 `new`，且用户需求明确是“创建新项目/初始化骨架/新建模块”，允许在 issue 中写出具体 `拟新增文件` 与 `拟新增目录`；这些路径必须明确标记为“拟新增”，不得伪装成现有文件。
+    - 若用户没有显式给出包名，而你需要一个最小默认值，请直接使用 `{bootstrap_package_name}` 继续拆解，不得把“包名待确认”写成当前轮次的阻塞项。
+    - 若用户已经点名最小骨架路径（如 `src/`、`tests/`、`pyproject.toml`、`__init__.py`、`cli.py`），issue 应优先围绕这些路径拆解，不要额外引入 `Typer`、`Click`、`Poetry`、`PDM`、`pytest`、`ruff`、`mypy`、`black` 等技术栈、依赖或工具配置，除非用户明确要求。
+    - 在 `bootstrap_mode=new` 的最小骨架场景下，优先拆成 2 到 4 张原子 issue；不要为了凑数量引入额外能力或未来功能。
+    - 验收标准应尽量使用“文件/目录存在”“文件内容最小可读”“执行日志可验证”这类客观标准；不要编造依赖某个未指明框架或命令的运行性验收。
+    - 不要在 issue 中写出完整代码样例、完整配置模板、完整命令链；只描述最小目标和最小边界，给 master 留出最终派单裁量空间。
+
+    风格要求：
+    - 写成工程协作可读格式，像真实 issue 草稿。
+    - issue 之间要体现依赖链和可并行性。
+  expected_output: >
+    一份 Markdown issue 草稿包，按 issue 分节。每节都必须包含：Issue ID、标题、目标、范围内、范围外、相关模块、涉及文件、依赖、验收标准、建议 node 类型。
+  output_file: outputs/issues.md
+
+workspace_plan_task:
+  description: >
+    基于 issue 草稿，设计第二版的本地 node/workspace 执行编排方案。
+
+    输出语言：
+    {output_language}
+
+    规则：
+    - 明确 master、backend_node、frontend_node、tester_node 各自接手哪些 issue。
+    - 为每个 node 给出建议 workspace 路径、分支命名、输入产物、输出产物和交接对象。
+    - 当前阶段是“本地模拟编排”，不是已落地的 sandbox 或 GitHub Actions；必须明确写出这一点。
+    - 若某类 node 在当前仓库不适用，也必须保留该节点并写明“不适用原因”。
+    - 不得把未来自动创建分支、issue、PR 说成已经实现。
+    - 若某个 workspace 下的具体文件不可见，只能分配到目录级边界，不能把具体文件名写成既有资产。
+    - 若某个 issue 与某个 node 的文件边界关系没有被本轮工具证据直接证明，只能分配到目录级，不得点名具体文件。
+    - 不得把“语义上相关”的文件当作“当前已确认归属”的文件；例如，某 route 未 import 某算法文件时，不得因名称接近就把该算法文件分配给该 route 对应 node。
+    - 若当前是 `bootstrap_mode=new` 且用户只要求最小骨架，workspace 方案必须保持极简：只围绕用户明确点名的目录与文件做目录级分工，不要擅自扩展技术栈、配置段、未来模块或细粒度函数职责。
+    - 在这种最小骨架场景下，`backend_node` 负责 `src/**` 与 `pyproject.toml`，`tester_node` 负责 `tests/**` 与轻量验证文件；不得把 `tests/**` 再分回 backend，也不要给 tester 分配 `src/**`。
+  expected_output: >
+    一份 Markdown 执行编排方案，包含：节点总览表、issue 分配、workspace 路径建议、分支命名建议、交接链路、阻塞条件。必须明确当前为“本地模拟编排”。
+  output_file: outputs/workspace_plan.md
+
+master_intake_task:
+  description: >
+    你是唯一对外入口的 master。请基于仓库分析与模块边界，形成本轮开发会话的 master 接单结论。
+
+    产品需求：
+    {product_requirement}
+
+    项目上下文：
+    {project_context}
+
+    输出语言：
+    {output_language}
+
+    执行模式：
+    {execution_mode}
+
+    bootstrap 模式：
+    {bootstrap_mode}
+
+    bootstrap 快车道：
+    {bootstrap_fast_track}
+
+    默认包名：
+    {bootstrap_package_name}
+
+    当前轮次：
+    {round_index}/{max_rounds}
+
+    上一轮摘要：
+    {previous_round_summary}
+
+    需要重派的 node：
+    {retry_nodes}
+
+    重派原因：
+    {retry_reason}
+
+    规则：
+    - 从用户视角总结本轮需求、仓库现实、执行模式与风险边界。
+    - 明确哪些工作交给内部 node，哪些仍由 master 保留。
+    - 不要把内部 node 的中间分析直接当成最终结论；由你统一改写成 master 口径。
+    - 若仓库证据不足，必须在本任务中明确写出“需补证据后再派发”。
+    - 若上游分析中出现任何未证实却当作事实的文件、依赖、接口、页面、测试、自动化能力，你必须主动降级表述或标记为待审计风险。
+    - 若 `bootstrap_mode` 为 `new`，则“目标路径当前不存在”本身不是阻塞项；只要用户需求是创建而非修改，就应把它解释为合法的拟新增目标。
+    - 若用户未指定包名，而本轮又需要创建最小 Python 包骨架，默认包名直接使用 `{bootstrap_package_name}`；不得仅因“包名待确认”而终止本轮执行。
+    - 若 `round_index` 大于 1，你必须把“本轮目标”收敛到 `retry_nodes` 和 `retry_reason` 指示的范围，不得重新铺开整个项目。
+    - 若 `bootstrap_fast_track=true`，你必须把输出压缩为“最小执行前说明”，不要复述完整模块规划、完整 issue 包或完整技术方案；目标是尽快让 master 进入真实派单。
+    - 若 `github_enabled=true` 且 `execution_mode=write`，你必须把 GitHub 仓库、issue、branch、PR 当作本轮真实交付链路的一部分，而不是未来蓝图。
+    - 在该模式下，GitHub 的最终决策者始终是 `master`；`reviewer` 只提供审计意见，`node` 不得自行合并。
+    - 若用户没有明确指定技术栈、框架、脚手架或顶层目录，你不得在本任务中擅自引入 `FastAPI`、`Flask`、`Django`、`React`、`Vue`、`Vite`、`Next.js`、`Makefile`、`Dockerfile`、CI 工作流等实现细节。
+    - 在空仓 `write` 场景下，唯一允许的默认模板是中性最小骨架：根级 `pyproject.toml`、`src/{bootstrap_package_name}/`、可选 `frontend/`、`tests/`。不得扩写为 node 同名目录、框架特定目录或额外工具链。
+    - 若 `bootstrap_fast_track=true`，你在本任务中最多只可点名以下中性目标：`pyproject.toml`、`src/{bootstrap_package_name}/`、`frontend/`、`tests/`；不得继续细化为 `models.py`、`main.py`、`Blueprint`、`fetch('/api/...')`、`pytest` 用例名等实现级细节。
+  expected_output: >
+    一份 Markdown 接单摘要，包含：用户需求、仓库现实、执行模式、候选 node、立即阻塞项、master 接单结论。该文件应当站在 master 视角书写。
+  output_file: outputs/master_intake.md
+
+master_dispatch_task:
+  description: >
+    你是 master。请把本轮需求正式拆成内部可执行派单，形成给 node 的调度单。
+
+    输出语言：
+    {output_language}
+
+    执行模式：
+    {execution_mode}
+
+    bootstrap 模式：
+    {bootstrap_mode}
+
+    bootstrap 快车道：
+    {bootstrap_fast_track}
+
+    默认包名：
+    {bootstrap_package_name}
+
+    GitHub 集成：
+    {github_enabled}
+
+    CI/CD 集成：
+    {cicd_enabled}
+
+    部署目标：
+    {deploy_user}@{deploy_host}:{deploy_port} -> {deploy_path}
+
+    GitHub owner / repo / base：
+    {github_owner}/{github_repo}@{github_base_branch}
+
+    当前轮次：
+    {round_index}/{max_rounds}
+
+    上一轮摘要：
+    {previous_round_summary}
+
+    需要重派的 node：
+    {retry_nodes}
+
+    重派原因：
+    {retry_reason}
+
+    规则：
+    - 你要把 issue 草稿与 workspace 方案统一整理成 master 调度单。
+    - 每个派单项必须说明：Issue ID、负责 node、允许修改路径、禁止修改路径、输入、交付物、回收标准。
+    - 必须显式说明“用户只和 master 对话，node 输出先回收给 master，不直接面向用户”。
+    - 若某个 node 本轮不适用，也要写进调度单，但标注为 `不派发`。
+    - 在 `execution_mode=plan` 时，调度单要说明仅生成执行计划；在 `execution_mode=write` 时，调度单要说明允许的真实写入范围。
+    - 若 issue 或 workspace 方案中存在证据不足的具体文件名，必须改写成目录级派单或直接标记为 `需补证据后再派发`。
+    - 你不得照抄上游 issue 或 workspace 中未经验证的具体路径；若上游写了不存在或未验证的路径，必须在调度单中显式降级为 `目录级范围` 或 `需补证据后再派发`。
+    - 若上游 issue / workspace 引入了用户原始需求中没有点名的技术栈、依赖、框架、命令或配置段（如 `Typer`、`Poetry`、`pytest`、`ruff` 等），而仓库快照中也无对应证据，你必须在本任务中主动剥离这些细节，不得继续派发。
+    - `允许修改路径` 与 `禁止修改路径` 可以使用三类值：`现有文件` 的逐字路径、已可见的 `现有目录` 路径、或经本调度单批准的具体 `拟新增文件` / `拟新增目录`。
+    - 若某个 node 仅看到了目录或 `package.json`，却没有看到具体源码文件，则不得给它分配具体源码文件级任务。
+    - `list_repo_files(...)` 返回 `未找到匹配路径。` 只表示“本轮未找到”；它不能证明该路径已存在，但在 `bootstrap_mode=new` 或“用户明确要求创建”的场景下，可作为“尚未创建、允许新建”的佐证之一，前提是该路径在调度单中被明确标记为 `拟新增`。
+    - 不得在正文中伪造、改写或扩展并未真实出现的工具结果；若本任务没有实际执行某个 glob 或读某个文件，就不得把它写成“已验证”。
+    - `负责 node` 只能从以下集合中选择：`backend_node`、`frontend_node`、`tester_node`；不得把分析师、规划师、issue 写手或 reviewer 再次派发成执行 node。
+    - 在 `write` 模式下，`backend_node` 默认负责 `src/**`、主包目录、CLI 与 `pyproject.toml`；`tester_node` 默认负责 `tests/**`、`scripts/**`、轻量 smoke/verify 文件。不要把 `tests/**` 或 `scripts/**` 交给 `backend_node`，除非用户明确要求且 `tester_node` 本轮被标记为不适用。
+    - 若某张 issue 没有被明确指派给某个执行 node，则必须写成 `不派发` 或 `需补证据后再派发`，不得用模糊说法暗示“后续由某角色补上”。
+    - 调度单必须优先引用 `master` 已确认的“拒收/待核实”结论；一旦上游某项被标记为 `上游路径待核实`、`无前端证据`、`测试基建缺失`，你不得再把它包装成正常派单项。
+    - 在 `plan` 模式下，交付物只能是文档、工作卡、目录级计划、验证说明；不得写出会造成“已经进入写代码阶段”错觉的文件级实施清单。
+    - 在 `write` 模式下，若需求本身是“创建/初始化/生成骨架”，你必须优先下发可执行的小步真实写入项，而不是只输出文档化计划；此时 `拟新增文件` / `拟新增目录` 应被视为待执行目标，而不是默认阻塞。
+    - 在 `write` 模式下，不得把“谨慎”“待确认”“可后续再做”当作普遍性拒写理由；除非路径越界、需求缺失、或会覆盖现有无关资产，否则应先执行，再交给 reviewer 打回或要求修订。
+    - 若 `github_enabled=true` 且 `execution_mode=write`，你必须先调用 `github_bootstrap_repo(...)` 确保仓库存在且本地 repo / remote / 默认分支就绪，再为每个实际派发项调用 `github_create_issue(...)` 创建真实 issue。
+    - 若 `cicd_enabled=true`，且用户本轮明确要求“CI/CD / 部署 / GitHub Actions / 自动发布”，你必须在派发前调用 `github_sync_cicd_secrets(...)`，把部署相关 secrets 真正写入当前 GitHub repo；不得只在文档里说“后续再配置”。
+    - 在该模式下，你为每个被派发的 work item 都必须给出真实 `branch_name`，并建议唯一 `worktree_path`；这些值必须写入 `dispatch_contract.work_items`。
+    - 在该模式下，`dispatch_contract.work_items` 中每一项除现有字段外，还必须补充：`github_issue_number`、`branch_name`、`worktree_path`、`pr_title`。
+    - 若 `cicd_enabled=true` 且用户明确要求 CI/CD，本轮允许新增的中性 CI/CD 目标仅限：`.github/workflows/ci.yml`、`.github/workflows/deploy.yml`、`scripts/deploy.sh`。除非用户明确批准，否则不得擅自扩写为 Docker、Kubernetes、Terraform、Helm、ArgoCD 等额外体系。
+    - 若用户已明确给出最小骨架路径清单，则调度单必须优先围绕这些路径派发，不得因为上游草稿更“丰富”就扩写为额外目标。
+    - 若 `bootstrap_fast_track=true`，你必须跳过冗长 issue/workspace 复述，直接生成“最小真实写入调度单”；优先让 node 在本轮落盘，不要把篇幅花在背景说明上。
+    - 若用户未明确指定技术栈或框架，你不得自动批准 `FastAPI`、`Flask`、`Django`、`React`、`Vue`、`Vite`、`Next.js`、`Makefile`、`Dockerfile`、CI 等技术选择；除非用户原话要求，或这些路径已经在仓库中真实存在。
+    - 在空仓 `write` 场景下，你只可从以下中性模板中选择派发目标：根级 `pyproject.toml`、`src/{bootstrap_package_name}/__init__.py`、`src/{bootstrap_package_name}/app.py` 或 `src/{bootstrap_package_name}/catalog.py`、`frontend/index.html`、`frontend/app.js`、`frontend/styles.css`、`tests/__init__.py`、`tests/smoke_test.py`。若需要超出该模板，必须在调度单中明确写出“用户显式要求”作为理由。
+    - 若 `bootstrap_fast_track=true`，则 `backend_node` 只可派发 `pyproject.toml`、`src/{bootstrap_package_name}/__init__.py`、`src/{bootstrap_package_name}/app.py`、`src/{bootstrap_package_name}/catalog.py`；`frontend_node` 只可派发 `frontend/index.html`、`frontend/app.js`、`frontend/styles.css`；`tester_node` 只可派发 `tests/__init__.py`、`tests/smoke_test.py`。不得创造任何其他文件名。
+    - 若上游草稿出现 `main.py`、`models.py`、`test_smoke.py`、`Blueprint`、`Flask`、`requests` 等未被用户点名、且不在上述中性模板内的内容，你必须在本任务中删除这些内容，而不是“保留待 reviewer 审查”。
+    - 若上游草稿把需求扩写成框架、工具链、node 同名目录或额外基础设施，而用户并未明确要求，你必须在本任务中剥离这些内容，只保留最小落盘目标。
+    - 若 `round_index` 大于 1，且 `retry_nodes` 不是 `all`，你必须只派发这些 node，并仅围绕上一轮失败项或继续项生成调度单。
+    - 你的输出末尾必须附带一个可机读的 `dispatch_contract` JSON 代码块，键至少包含：`round_index`、`mode`、`active_nodes`、`inactive_nodes`、`work_items`、`user_interface`。
+    - `work_items` 中的每一项必须至少包含：`issue_id`、`node`、`action`、`targets`、`must_use_tools`、`done_when`。
+    - 当你把某个具体 `targets` 写进 `dispatch_contract.work_items` 时，这些 `targets` 就是该 node 本轮被 master 批准的真实执行边界；请只写你愿意让 node 真正落盘的路径。
+    - 若 `bootstrap_mode=new` 且 `execution_mode=write`，本轮 `dispatch_contract.work_items` 总数不得超过 3 个，且至少 1 个 work item 必须能在本轮直接触发真实文件写入。
+  expected_output: >
+    一份 Markdown master 调度单，包含：派单原则、node 分工表、每个 Issue 的 node 归属、允许/禁止路径、回收标准、当前是否进入真实写代码阶段，并在末尾附带一个 `dispatch_contract` JSON 代码块。
+  output_file: outputs/master_dispatch.md
+
+backend_node_task:
+  description: >
+    你是后端与核心逻辑节点。请只接手属于后端、CLI、数据层、编排核心层的 issue。
+    若 `bootstrap_fast_track=true`，你的首要目标不是长篇工作卡，而是先把最小后端骨架真实落盘，再补一份很短的执行说明。
+
+    输出语言：
+    {output_language}
+
+    执行模式：
+    {execution_mode}
+
+    bootstrap 模式：
+    {bootstrap_mode}
+
+    bootstrap 快车道：
+    {bootstrap_fast_track}
+
+    默认包名：
+    {bootstrap_package_name}
+
+    GitHub 集成：
+    {github_enabled}
+
+    CI/CD 集成：
+    {cicd_enabled}
+
+    规则：
+    - 若分配到的 issue 不属于后端类，必须指出并拒绝接单。
+    - 若当前仓库未见明显后端目标，也可输出“本轮无后端类 issue”，但仍需给出判断依据。
+    - 对每个接手的 issue，必须写出：目标、现有文件、拟新增文件、改动计划、验证命令、风险、交付物。
+    - 默认输出 node 工作卡；若 `execution_mode=write` 且你确实完成了真实文件修改，可如实补充“实际修改文件”和“实际未完成项”，但不得夸大完成范围。
+    - 任何 `现有文件` 路径都必须能在仓库快照中逐字找到；若找不到，只能写 `未发现需确认` 或上升为目录级描述。
+    - 当 `execution_mode` 为 `write` 时，只要 master 调度单已经批准了具体 `拟新增文件` 或 `拟新增目录`，你就应当把它当作待执行目标而不是阻塞项，并优先调用工具完成真实写入/建目录。
+    - 若要修改代码，优先使用“读取目标仓库文件”确认内容，再使用“替换目标仓库文件文本”或“写入目标仓库文件”进行最小改动。
+    - 严禁修改未在仓库快照中出现的现有文件；对 `拟新增文件` 可以创建，但必须在输出中明确说明创建原因。
+    - 若证据不足、范围不清、或会覆盖无关现有文件，才可以停止写入并在输出中写明“未执行代码修改”；不得因为“路径当前不存在”而拒绝创建经批准的 `拟新增文件`。
+    - 若 master 调度单或 issue 草稿里写了你未亲自用工具确认过的具体文件名，你不得直接采纳；必须先用工具验证，验证失败则拒绝该子项并标注 `上游路径待核实`。
+    - `拟新增文件` 只能在以下条件同时满足时出现：存在明确的挂载点或创建目标、当前没有等价现有文件、且新增理由能用一条可见证据说明；若这些条件由用户需求 + master 调度单共同满足，你应直接创建，不要继续空转。
+    - 不得因为“业务上合理”就新造路径，例如 `session/context_manager.py`、`config/__init__.py`、`cli.py` 这类路径，除非本轮工具已命中或用户明确指定。
+    - 若 issue 描述与真实代码不一致，应以真实代码为准，并在工作卡中显式写出“上游 issue 与仓库事实不一致，已降级/拒收”。
+    - `未找到匹配路径。` 不能被说成“已经存在”；但在 `bootstrap_mode=new` 或“明确创建新文件”的场景下，它可以支持“该路径当前缺失，适合执行创建”这一结论。
+    - 不得引用你没有在本任务中真正执行过的工具查询结果；不要写“已通过某 glob 确认”除非该 glob 的真实返回就在本任务上下文里。
+    - 若 master 没有给出明确的 `Issue ID` + `允许修改路径` + `输入` 三件套，你必须整体拒收，不得自行脑补任务目标。
+    - 若 issue 仅停留在“能力愿景”或“架构建议”，没有真实代码锚点，则你的工作卡只能输出 `不接手/待补证据`，不得把愿景改写为可实施代码方案。
+    - 在 `plan` 模式下，改动计划必须停留在“读哪些真实文件、如何核实、若进入 write 再怎么改”的层级；不得直接输出新的函数签名、类名、目录树或具体实现步骤，除非这些名字已经在真实代码中出现。
+    - 若发现上游产物与仓库事实不一致，你必须优先缩小范围或拒收，而不是替上游修正需求后继续推进。
+    - 在 `write` 模式下，若你接手了明确的创建型 issue，却没有调用任何写入工具（`make_repo_directory`、`write_repo_file`、`replace_repo_text`），你必须给出具体的硬阻塞原因；“谨慎起见暂不写入”不是有效理由。
+    - 若用户未指定包名，而 issue 只是要求创建最小 Python 包骨架，则默认使用 `{bootstrap_package_name}` 执行；不得把“包名待确认”当作本轮默认阻塞项。
+    - 若某个派单项的 `targets` 落在 `tests/`、`tests/**` 或 `scripts/**`，应视为 tester 范围，你必须拒收并在工作卡中明确写出“应由 tester_node 接手”；不要为了求稳把测试骨架吞进 backend。
+    - 你必须先从 `master_dispatch` 上下文中的 `dispatch_contract` 识别当前轮是否派发给 `backend_node`；若未派发，则明确输出 `skipped`，不得擅自执行。
+    - 若已派发给 `backend_node` 且 `execution_mode=write`，必须先调用真实工具完成写入，再写工作卡；不得把计划写在执行前面冒充结果。
+    - 若 `github_enabled=true` 且 `execution_mode=write`，你必须按如下顺序执行：1) 读取 `dispatch_contract` 中分配给你的 `github_issue_number`、`branch_name`、`worktree_path`；2) 调用 `git_prepare_node_workspace(...)`；3) 在该 worktree 中调用文件写入工具；4) 调用 `git_commit_and_push(...)`；5) 调用 `github_create_or_update_pr(...)`。不得跳过 branch / worktree / PR。
+    - 若 `cicd_enabled=true` 且你被派发了 `.github/workflows/deploy.yml` 或 `scripts/deploy.sh`，必须直接落盘这些 CI/CD 文件；它们属于本轮真实交付，不是未来蓝图。
+    - 在该场景下，部署脚本必须优先使用 `ssh` + `git pull` + 进程重启这一最小链路；除非用户明确要求，否则不要擅自引入 Docker、Kubernetes 或云原生编排。
+    - 若 `bootstrap_fast_track=true`，且本轮接手的是创建型骨架任务，你的第一批有效动作必须是 `make_repo_directory` / `write_repo_file`；不要先输出大段分析、计划或验证矩阵。
+    - 若 `bootstrap_fast_track=true` 且你的节点在执行日志中没有留下任何真实写入记录，本轮结果将被系统直接视为失败并强制 `REWORK`；因此“只写工作卡不落盘”是无效交付。
+    - 若 `bootstrap_fast_track=true`，你只可落盘 `pyproject.toml`、`src/{bootstrap_package_name}/__init__.py`、`src/{bootstrap_package_name}/app.py`、`src/{bootstrap_package_name}/catalog.py`。若上游派单写了 `main.py`、`models.py` 或任何其他文件名，你必须降级为上述中性模板并继续执行，不得因此停写。
+    - 在该模式下，默认优先写 `pyproject.toml`、`src/{bootstrap_package_name}/__init__.py`、`src/{bootstrap_package_name}/catalog.py`；只有当上游明确批准 `app.py` 时才额外写入 `app.py`。
+    - 在该模式下，不得引入 `Flask`、`FastAPI`、`Django`、`Blueprint` 等框架名；后端骨架只需写出最小 Python 模块与静态商品数据，不要求本轮完成真实 Web 框架接线。
+    - 在该模式下，请按以下顺序直接执行：1) `make_repo_directory("src/{bootstrap_package_name}")`；2) `write_repo_file("pyproject.toml", "...最小项目元信息...")`；3) `write_repo_file("src/{bootstrap_package_name}/__init__.py", "")`；4) 若已批准 `app.py` 则写 `src/{bootstrap_package_name}/app.py`，否则写 `src/{bootstrap_package_name}/catalog.py`。这几步完成前，不要把精力放在长篇计划、风险扩写或框架选型上。
+    - `src/{bootstrap_package_name}/app.py` 的最小合格内容只需满足三点：存在一个返回静态商品列表的函数、正文包含 `/api/snacks` 或“商品接口”字样之一、文件可被 Python 解释器读取。优先使用 Python 标准库，不要引入第三方框架。
+    - 你的输出末尾必须附带一个可机读的 `node_contract` JSON 代码块，键至少包含：`node`、`round_index`、`status`、`completed_items`、`failed_items`、`files_written`、`directories_created`、`blocking_reason`。
+  expected_output: >
+    一份 Markdown 节点工作卡。若 `bootstrap_fast_track=true`，优先简短汇报：接手的 issue、实际修改文件、最小验证说明、未执行原因（若未修改），并在末尾附带一个 `node_contract` JSON 代码块。若无适用 issue，需明确写出原因。
+  output_file: outputs/backend_node.md
+
+frontend_node_task:
+  description: >
+    你是前端与交互表面节点。请只接手属于 UI、前端、交互层、对外使用入口或文档界面的 issue。
+    若 `bootstrap_fast_track=true`，你的首要目标不是长篇工作卡，而是先把最小前端骨架真实落盘，再补一份很短的执行说明。
+
+    输出语言：
+    {output_language}
+
+    执行模式：
+    {execution_mode}
+
+    bootstrap 模式：
+    {bootstrap_mode}
+
+    bootstrap 快车道：
+    {bootstrap_fast_track}
+
+    GitHub 集成：
+    {github_enabled}
+
+    CI/CD 集成：
+    {cicd_enabled}
+
+    规则：
+    - 若仓库快照未见前端或交互层证据，不得虚构页面、组件或 API；必须写出“本轮无前端类 issue”并说明依据。
+    - 对每个接手的 issue，必须写出：目标、现有文件、拟新增文件、改动计划、验证命令、风险、交付物。
+    - 默认输出 node 工作卡；若 `execution_mode=write` 且你确实完成了真实文件修改，可如实补充“实际修改文件”和“实际未完成项”，不得把 PR、合并或发布写成已经发生。
+    - 不得通过“常见前端目录”倒推项目里存在模板或静态资源；未显示即视为未发现。
+    - 当 `execution_mode` 为 `write` 时，若 master 已批准具体前端 `拟新增文件` 或 `拟新增目录`，你应直接执行创建；不要因为该路径当前不存在而默认拒写。
+    - 若只看见前端目录或 `package.json`，但未看见具体源码文件，则不得写代码，只能停留在任务说明。
+    - 若需要猜测 `src/` 内部文件名、组件名、接口名或状态管理结构，必须停止写入并说明原因。
+    - 若上游调度单给你分配了本轮工具未命中的前端路径，你必须拒绝该子项，不得沿用这些路径生成工作卡。
+    - 若需要新增前端文件，但没有真实可见的父级源码目录作为挂载点，且也没有被 master 调度单明确批准为 `拟新增目录`，则只能写 `需补证据后再派发`。
+    - `未找到匹配路径。` 只表示尚未存在；它不能证明目录已存在，但在“用户明确要求新建前端模块”且 master 已批准的场景下，可支持“允许创建该新路径”的结论。
+    - 不得罗列你未实际查询到的文件名或工具调用；只能复述真实工具返回里的路径。
+    - 在 `write` 模式下，若已接手明确的创建型前端 issue，却没有调用任何写入工具，你必须写出具体硬阻塞原因；不得用抽象谨慎理由替代执行。
+    - 若 `github_enabled=true` 且 `execution_mode=write`，你必须按如下顺序执行：1) 读取 `dispatch_contract` 中分配给你的 `github_issue_number`、`branch_name`、`worktree_path`；2) 调用 `git_prepare_node_workspace(...)`；3) 在该 worktree 中调用文件写入工具；4) 调用 `git_commit_and_push(...)`；5) 调用 `github_create_or_update_pr(...)`。
+    - 若 `cicd_enabled=true` 且你被派发了前端可见的 CI/CD 目标（如发布页、静态校验页或需要配合的 workflow 文案文件），只可处理 master 已批准的那些具体路径；不得擅自扩写额外前端工程化体系。
+    - 若 `bootstrap_fast_track=true`，你应优先落盘最小文件集合，再补充工作卡；不要把大段解释放在真实写入前面。
+    - 若 `bootstrap_fast_track=true`，你只可落盘 `frontend/index.html`、`frontend/app.js`、`frontend/styles.css`。若上游派单写成 `package.json`、`vite.config.js`、`src/App.vue`、`src/main.tsx` 或其他路径，你必须降级为这三个中性模板目标并继续执行，不得因此停写。
+    - 在该模式下，请按以下顺序直接执行：1) `make_repo_directory("frontend")`；2) `write_repo_file("frontend/index.html", "...最小 HTML 骨架...")`；3) 若已批准 `frontend/app.js` 则写入最小无依赖脚本；4) 若已批准 `frontend/styles.css` 则写入最小样式。这几步完成前，不要把精力放在长篇说明、框架比较或交互设计扩写上。
+    - `frontend/index.html` 的最小合格内容只需满足三点：是合法 HTML 文本、正文包含商品或零食相关占位文案之一、文件可被浏览器直接打开。优先保持纯静态，不要引入框架。
+    - 你必须先从 `master_dispatch` 上下文中的 `dispatch_contract` 识别当前轮是否派发给 `frontend_node`；若未派发，则明确输出 `skipped`。
+    - 你的输出末尾必须附带一个可机读的 `node_contract` JSON 代码块，键至少包含：`node`、`round_index`、`status`、`completed_items`、`failed_items`、`files_written`、`directories_created`、`blocking_reason`。
+  expected_output: >
+    一份 Markdown 节点工作卡。若 `bootstrap_fast_track=true`，优先简短汇报：接手的 issue、实际修改文件、最小验证说明、未执行原因（若未修改），并在末尾附带一个 `node_contract` JSON 代码块。若无适用 issue，需明确写出原因。
+  output_file: outputs/frontend_node.md
+
+tester_node_task:
+  description: >
+    你是测试与质量门禁节点。请接手属于测试目录、测试骨架、轻量验证脚本、质量门禁的 issue。
+    若 `bootstrap_fast_track=true`，你的首要目标不是写长篇验证方案，而是先把最小 smoke 测试骨架真实落盘，再补一份很短的验证说明。
+
+    输出语言：
+    {output_language}
+
+    执行模式：
+    {execution_mode}
+
+    bootstrap 模式：
+    {bootstrap_mode}
+
+    bootstrap 快车道：
+    {bootstrap_fast_track}
+
+    当前轮次：
+    {round_index}/{max_rounds}
+
+    GitHub 集成：
+    {github_enabled}
+
+    需要重派的 node：
+    {retry_nodes}
+
+    规则：
+    - 先从 master 调度单中识别明确派发给 `tester_node` 的 issue；若存在这类 issue，必须逐条接手或明确拒收，不得跳过不写。
+    - 不得假设 `tests/`、CI、`pytest`、`make`、GitHub workflow 已存在，除非仓库中可见。
+    - 对每个 issue 或每类改动，给出：验证目标、推荐命令、风险点、回归关注点、通过标准。
+    - 若仓库缺失测试基建，必须写出“当前缺失”并给出最小人工验证方案。
+    - 需要指出哪些检查适合未来交给 GitHub 自动化。
+    - 若验证命令依赖 `拟新增文件`，必须明确写成“未来交付后可执行”，不得暗示当前仓库已可运行。
+    - 当 `execution_mode` 为 `write` 时，若 master 调度单明确批准了轻量测试占位文件、验证脚本或测试目录创建，你应执行创建；不要因为 `tests/` 当前不存在而默认拒绝。
+    - 在 `write` 模式下，`tester_node` 默认拥有 `tests/**`、`scripts/**`、轻量验证脚本和 smoke 文件的落盘职责；只要 master 调度单已批准这些目标，就应直接写入。
+    - 在 `write` 模式下，若 `tester_node` 接手的是创建型测试骨架任务（例如 `tests/`、`tests/__init__.py`、smoke 脚本、校验脚本），必须先调用 `make_repo_directory` / `write_repo_file` 完成真实创建，再写验证矩阵；不得只输出验证文档而不落盘。
+    - 若 `github_enabled=true` 且 `execution_mode=write`，你必须按如下顺序执行：1) 读取 `dispatch_contract` 中分配给你的 `github_issue_number`、`branch_name`、`worktree_path`；2) 调用 `git_prepare_node_workspace(...)`；3) 在该 worktree 中调用文件写入工具；4) 调用 `git_commit_and_push(...)`；5) 调用 `github_create_or_update_pr(...)`。
+    - 若 `cicd_enabled=true` 且你被派发了 `.github/workflows/ci.yml`，必须直接落盘一个真实可运行的 GitHub Actions CI workflow；其检查命令必须以仓库可见证据为准，不得凭空假设不存在的工具链。
+    - 若仓库没有真实测试基建证据，不得凭空创建复杂测试体系；最多只可创建轻量 smoke 脚本或文档化验证脚本，并在输出中说明。
+    - 若 `execution_mode=write` 且你确实新增或修改了轻量验证文件，可在产出中列出“实际修改文件”，但不得把尚未运行的验证写成“已通过”。
+    - 若上游 node 工作卡引用了未验证的文件路径或函数名，你必须先指出该证据缺口，再决定是否降级为目录级人工验证；不得基于幻觉路径设计测试。
+    - 若某个路径在上游被写出，但本任务没有真实工具证据，你必须把它视为未验证对象，不得把它写进“当前可执行命令”。
+    - 在 `write` 模式下，若你接手的是创建型测试骨架任务，却没有调用任何写入工具，你必须给出具体硬阻塞原因；“当前没有 tests/” 不是有效阻塞，因为它本身可能正是待创建目标。
+    - 你必须先从 `master_dispatch` 上下文中的 `dispatch_contract` 识别当前轮是否派发给 `tester_node`；若未派发，则明确输出 `skipped`。
+    - 若 `tester_node` 已被派发创建型测试骨架任务，必须先落盘，再写验证矩阵。
+    - 若 `bootstrap_fast_track=true`，且本轮接手的是创建型测试骨架任务，你的第一批有效动作必须是 `make_repo_directory` / `write_repo_file`；不要先输出长篇验证文档。
+    - 若 `bootstrap_fast_track=true` 且你的节点在执行日志中没有留下任何真实写入记录，本轮结果将被系统直接视为失败并强制 `REWORK`；因此“只写验证矩阵不落盘”是无效交付。
+    - 若 `bootstrap_fast_track=true`，你只可落盘 `tests/__init__.py` 与 `tests/smoke_test.py`；若上游派单写成 `test_smoke.py`、`pyproject.toml`、`pytest.ini` 或其他路径，你必须降级为这两个中性模板目标并继续执行，不得因此停写。
+    - 在该模式下，你的第一步应当是：创建 `tests/` 目录，然后写入 `tests/__init__.py` 和 `tests/smoke_test.py`；完成这两步之前，不要展开长篇验证矩阵。
+    - 在该模式下，`tests/smoke_test.py` 只需提供最小 smoke 占位，不要求真实联网、子进程管理或完整测试框架接线；先落盘，再说明如何补强。
+    - 在该模式下，请按以下顺序直接执行：1) `make_repo_directory("tests")`；2) `write_repo_file("tests/__init__.py", "")`；3) `write_repo_file("tests/smoke_test.py", "...最小 smoke 占位...")`。这三步完成前，不要把精力放在验证矩阵、CI 建议或扩展说明上。
+    - `tests/smoke_test.py` 的最小合格内容只需满足三点：存在一个 `test_smoke_placeholder()` 或等效函数、文件可被 Python 解释器读取、正文包含 `/api/snacks` 或“商品接口 smoke”字样之一。
+    - 你的输出末尾必须附带一个可机读的 `node_contract` JSON 代码块，键至少包含：`node`、`round_index`、`status`、`completed_items`、`failed_items`、`files_written`、`directories_created`、`blocking_reason`。
+  expected_output: >
+    一份 Markdown 质量门禁文档。若 `bootstrap_fast_track=true`，优先简短汇报：接手的 issue、实际修改文件、最小验证说明、未执行原因（若未修改），并在末尾附带一个 `node_contract` JSON 代码块。必须区分“当前可执行”和“未来拟自动化”。
+  output_file: outputs/tester_node.md
+
+pr_drafting_task:
+  description: >
+    汇总 workspace 方案与各 node 工作卡，输出可直接复制到 GitHub Pull Request 的草稿包。
+
+    输出语言：
+    {output_language}
+
+    规则：
+    - 产出 1 到 3 个 PR 草稿。
+    - 每个 PR 必须包含：标题、关联 issue、建议分支名、变更摘要、涉及模块、验证方式、风险、评审清单、合并前条件。
+    - 不得把“建议分支名”“建议标签”“建议 reviewer”写成已经创建。
+    - PR 划分必须和 node 分工一致，不得让一个 PR 横跨互不相干的模块。
+    - PR 草稿中不得引用不可见的现有函数名、文件名、CLI 子命令或配置字段；若需要举例，只能引用 `拟新增文件` 或目录级路径。
+    - 若 node 工作卡中存在未核实路径、被拒收子项或 `需补证据后再派发` 项，PR 草稿必须剔除这些内容，不得继续沿用。
+    - PR 草稿优先引用目录级模块范围；只有当某个具体文件在本轮工具结果中可见，且未被 reviewer 风险规则否定，才可写入“涉及文件”。
+    - 若本轮 `backend_node`、`frontend_node`、`tester_node` 没有形成可执行交付物，或明确写出“无适用 issue / 拒收 / 待核实”，你应输出“本轮不生成 PR 草稿”，而不是硬凑 PR。
+    - 在 `plan` 模式下，PR 草稿必须明确标出“规划性 PR 草稿”，不得让读者误解为已经有实际 diff、已创建分支或已修改文件。
+    - `变更摘要` 只能来源于 node 已确认接手且未拒收的事项；不得把 issue 草稿里的愿景直接升级成 PR 变更。
+    - 若某条变更依赖 `拟新增文件`，但该新增文件尚未在 node 工作卡中被保守接受，你不得把它写进 PR 范围。
+    - 在 `write` 模式下，若执行日志中没有对应的真实创建/写入/替换记录，则不得把 `拟新增文件` 写成 PR 已包含的变更；此时应明确写“本轮不生成 PR 草稿”。
+    - 若当前更适合不产出 PR，请直说“不生成 PR 草稿，原因是节点交付尚未达到 PR 条件”，这比幻觉式完整 PR 更正确。
+    - 若当前轮次存在未完成的派发项，你应优先输出“本轮不生成 PR 草稿”或“仅生成部分 PR 草稿”，不得把未完成项混入 PR。
+  expected_output: >
+    一份 Markdown PR 草稿包，按 PR 分节。每节必须包含：标题、关联 issue、建议分支名、变更摘要、涉及模块、验证方式、风险、评审清单、合并前条件。
+  output_file: outputs/pr_drafts.md
+
+execution_summary_task:
+  description: >
+    汇总本轮执行中 node 通过工具对目标仓库做出的真实文件变更。
+
+    输出语言：
+    {output_language}
+
+    执行模式：
+    {execution_mode}
+
+    规则：
+    - 使用“读取执行日志”工具检查 `outputs/execution_log.jsonl`。
+    - 若 `execution_mode` 不是 `write`，必须明确写出本轮为规划模式，没有实际代码写入。
+    - 若存在真实写入，必须逐条汇总：动作类型、目标文件、是否新建、与哪个 node 输出对应。
+    - 不得把“计划修改”写成“实际已修改”；只有执行日志中出现的文件，才可写入“实际修改文件”。
+    - 若 `bootstrap_mode=new` 且 `execution_mode=write`，但执行日志为空，你必须明确写出“本轮 bootstrap 写模式失败：没有任何真实写入”，不得用中性措辞淡化该问题。
+  expected_output: >
+    一份 Markdown 执行摘要，包含：执行模式、实际修改文件、实际新建文件、未执行的节点、主要风险、后续建议。若无实际写入，必须明确写出“本轮未修改目标仓库代码”。
+  output_file: outputs/execution_summary.md
+
+github_automation_task:
+  description: >
+    基于 issue 草稿、workspace 方案、node 工作卡和 PR 草稿，整理 GitHub 自动化与 CI/CD 状态。
+
+    项目上下文：
+    {project_context}
+
+    输出语言：
+    {output_language}
+
+    GitHub 集成：
+    {github_enabled}
+
+    CI/CD 集成：
+    {cicd_enabled}
+
+    规则：
+    - 若 `github_enabled=false`，本任务输出的是 `GitHub 自动化蓝图`，不是已存在功能。
+    - 若 `github_enabled=true` 但 `cicd_enabled=false`，可继续输出 GitHub 自动化蓝图，但不得伪装成真实 CI/CD 已接通。
+    - 若 `github_enabled=true` 且 `cicd_enabled=true`，你必须基于本轮真实执行结果，汇总：已创建的 workflow 文件、已同步的 repo secrets、当前部署链路、仍未完成的环节；此时不要再把它写成“未来蓝图”。
+    - 必须覆盖：issue 模板、标签策略、分支命名、PR 模板、状态流转、所需 secrets、未来触发点。
+    - 若需要新增文件，如 `.github/ISSUE_TEMPLATE/*.md`、`.github/pull_request_template.md`、`.github/workflows/*.yml`，必须标记为 `拟新增文件`。
+    - 除 `github_enabled=true` 且本轮工具实际完成的项外，不得声称已经接通 GitHub API、Webhook、Actions、Runner 或自动 merge。
+    - 若蓝图引用现有仓库文件作为输入来源，这些文件路径必须在仓库快照中逐字可见。
+    - 若本轮主要目标是代码执行而非自动化设计，你可以输出“本轮自动化蓝图延后”，并只列出拟新增文件清单；不得虚构任何已经运行的自动化事件流。
+  expected_output: >
+    一份 Markdown 自动化状态文档。若 `cicd_enabled=true`，包含：已创建 workflow、已同步 secrets、部署链路、实施顺序、暂不实现项；否则输出自动化蓝图并明确“当前尚未接通真实 GitHub 自动化”。
+  output_file: outputs/github_automation.md
+
+reviewer_audit_task:
+  description: >
+    你是内部 reviewer，不是最终拍板人。请审计本轮 master 派单、node 执行结果、PR 草稿、执行摘要与自动化蓝图，给 master 提供审计意见。
+
+    输出语言： {output_language}
+
+    当前轮次： {round_index}/{max_rounds}
+
+    需要重派的 node： {retry_nodes}
+
+    GitHub 集成： {github_enabled}
+
+    CI/CD 集成： {cicd_enabled}
+
+    语言硬规则：
+    - 完整输出必须使用 {output_language}。
+    - 若主要解释文字为英文，则结论必须是 `REWORK`。
+
+    评审规则：
+    - 若任何产物把不存在的文件、依赖、接口、测试、GitHub workflow、issue、PR、分支、自动化能力写成已存在事实，结论必须为 `REWORK`。
+    - 若任何产物把“目录里可能存在的文件名”写成 `现有文件`，或使用“示例存在”“符合命名惯例”“推测文件名”等说法替代证据，结论必须为 `REWORK`。
+    - 若任何产物把“同目录存在”“语义相关”“增强起点”“按约定补全”等推理，当成 `现有依赖`、`现有映射` 或 `现有归属`，结论必须为 `REWORK`。
+    - 若任何产物引用的具体现有文件路径无法在仓库快照或命名源文件中逐字找到，结论必须为 `REWORK`。
+    - 若 `master_dispatch.md` 为 node 分配了未被工具命中的具体文件路径，且这些路径既不是 `bootstrap_mode=new` 下经 master 批准的 `拟新增文件/拟新增目录`，也不在执行日志中出现，结论必须为 `REWORK`。
+    - 若 `backend_node.md`、`frontend_node.md`、`tester_node.md` 沿用了上游未验证路径而未明确拒收，结论必须为 `REWORK`。
+    - 若任何产物把 `未找到匹配路径。` 解读为“目录存在但为空”或“已经存在可修改文件”，结论必须为 `REWORK`。
+    - 在 `bootstrap_mode=new` 或“用户明确要求创建”的场景下，若产物把 `未找到匹配路径。` 结合 master 调度单解释为“该路径当前缺失、允许新建”，且后续真实写入受执行日志佐证，这不构成幻觉。
+    - 若任何产物声称执行过某个工具查询、glob 或文件读取，但该查询结果未在该任务上下文中真实出现，结论必须为 `REWORK`。
+    - 若测试或 PR 文档把依赖 `拟新增文件` 的命令描述为当前已可执行，结论必须为 `REWORK`。
+    - 若执行摘要声称修改了某文件，但执行日志中不存在对应记录，结论必须为 `REWORK`。
+    - 若节点在 `execution_mode=plan` 下实际写入代码，或在 `execution_mode=write` 下越界修改无关模块，结论必须为 `REWORK`。
+    - 若 `bootstrap_mode=new` 且 `execution_mode=write`，但执行日志为空或没有任何真实写入记录，结论必须为 `REWORK`；不得接受“只完成了分析/issue/调度文档”的结果。
+    - 若 `github_enabled=true`，你必须优先读取 `read_github_state` 与必要的 `git_branch_diff_summary`，检查 issue ↔ node ↔ branch ↔ PR 映射是否闭环、PR 是否与被派发 issue/branch 一致、node 是否越界改动了非本分支目标。
+    - 若 `github_enabled=true` 且 PR 已存在，你应在审计意见中明确给出建议的 GitHub review 动作倾向：通过时倾向 `APPROVE`，打回时倾向 `REQUEST_CHANGES`，仅补充说明时倾向 `COMMENT`；但真正执行 review 动作的人仍然是 `master`。
+    - 若 `cicd_enabled=true`，你还必须检查 `read_github_state` 中是否已记录本轮同步的 `repo_secrets`，以及 CI/CD 相关文件是否确实出现在执行日志或 PR diff 中；若缺少 secrets 或 workflow 实际文件，却把 CI/CD 写成“已接通”，结论必须为 `REWORK`。
+    - 若产物仍停留在抽象规划，没有形成 issue、node、workspace、PR、GitHub 自动化蓝图这些第二版关键交付物，结论必须为 `REWORK`。
+    - 若前端节点在无证据仓库中虚构页面或接口，结论必须为 `REWORK`。
+    - 若测试节点把不可见的测试基建写成既成事实，结论必须为 `REWORK`。
+    - 已安装 CrewAI 版本是 `{crewai_version}`，若引用其他版本作为事实，结论必须为 `REWORK`。
+    - 你的输出末尾必须附带一个可机读的 `review_contract` JSON 代码块，键至少包含：`verdict`、`failed_nodes`、`passed_nodes`、`blocking_issues`、`rework_items`、`merge_ready`。
+
+    你只输出审计意见，不做最终 merge 决策。
+  expected_output: >
+    一份 Markdown 审计报告，包含：审计结论、主要问题、越界检查、证据缺口、建议给 master 的动作，并在末尾附带一个 `review_contract` JSON 代码块。审计结论只能是 PASS、REWORK、ESCALATE 之一。
+  output_file: outputs/reviewer_audit.md
+
+master_decision_task:
+  description: >
+    你是唯一对外入口的 master。请基于接单摘要、调度单、各 node 结果、执行摘要、PR 草稿、内部 reviewer 审计意见，做出最终裁决。
+
+    输出语言：
+    {output_language}
+
+    执行模式：
+    {execution_mode}
+
+    当前轮次：
+    {round_index}/{max_rounds}
+
+    上一轮摘要：
+    {previous_round_summary}
+
+    GitHub 集成：
+    {github_enabled}
+
+    CI/CD 集成：
+    {cicd_enabled}
+
+    规则：
+    - 最终结论只能是 `MERGE`、`REWORK`、`CONTINUE_DISPATCH` 之一。
+    - `MERGE` 表示当前结果足以进入合并阶段或视为完成；
+    - `REWORK` 表示至少一个 node 结果不合格，必须由 master 打回；
+    - `CONTINUE_DISPATCH` 表示当前结果基本可接受，但还需 master 继续派发后续 issue。
+    - 必须站在 master 视角写：你如何判断、打回给谁、是否合并、下一步派给谁。
+    - 用户只看这份文件即可理解当前整体状态；不要要求用户再去分别阅读每个 node 的原始产物。
+    - 若 reviewer 结论为 `REWORK`，或你发现任一上游产物存在未证实事实、路径幻觉、把规划写成已实现、或 `plan` 模式下声称已改代码，则最终结论不得为 `MERGE`。
+    - 若当前只完成到“派单/工作卡/PR 草稿/自动化蓝图”，但尚未产生足以合并的真实代码与验证结果，优先输出 `REWORK` 或 `CONTINUE_DISPATCH`，不得轻易输出 `MERGE`。
+    - 若 `bootstrap_mode=new` 且 `execution_mode=write`，但执行日志为空或没有任何真实写入，本任务必须输出 `REWORK`，不得输出 `CONTINUE_DISPATCH` 继续文档化推进。
+    - 你必须优先参考 `review_contract` JSON 与执行日志；不要只凭长文描述做决定。
+    - 若 `github_enabled=true`，你必须额外参考 `read_github_state`；当决定为 `MERGE` 时，应先对通过审计且映射完整的 PR 调用 `github_review_pr(event=\"APPROVE\", ...)`，再调用 `github_merge_pr(...)` 执行真实合并。
+    - 若 `github_enabled=true` 且决定为 `REWORK`，应对相关 PR 调用 `github_review_pr(event=\"REQUEST_CHANGES\", ...)`，把 master 的打回意见真正写入 GitHub；此时不得合并 PR。
+    - 若 `github_enabled=true` 且决定为 `CONTINUE_DISPATCH`，可对相关 PR 调用 `github_review_pr(event=\"COMMENT\", ...)` 补充阶段性说明；此时不得合并 PR。
+    - 若 `cicd_enabled=true`，你必须同时检查：CI/CD 相关 workflow 文件是否已真实落盘、部署 secrets 是否已同步、reviewer 是否确认部署链路未伪造成“已验证成功”；只有这三项都满足，CI/CD 才能被视为“已接通第一版”。
+    - 若决定为 `REWORK`，必须尽量缩小到具体失败 node，并给出 `rerun_nodes`。
+    - 若决定为 `CONTINUE_DISPATCH`，必须给出下一轮继续派发的 node 或 issue 范围。
+    - 你的输出末尾必须附带一个可机读的 `decision_contract` JSON 代码块，键至少包含：`decision`、`round_index`、`rerun_nodes`、`next_round_goal`、`stop_reason`。
+  expected_output: >
+    一份 Markdown master 决策报告，包含：最终结论、master 判断依据、涉及 node、打回/合并/继续派发动作、下一步安排，并在末尾附带一个 `decision_contract` JSON 代码块。结论只能是 MERGE、REWORK、CONTINUE_DISPATCH 之一。
+  output_file: outputs/master_decision.md

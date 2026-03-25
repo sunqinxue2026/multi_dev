@@ -1,0 +1,173 @@
+# MultiDev Crew
+
+Welcome to the MultiDev Crew project, powered by [crewAI](https://crewai.com). This template is designed to help you set up a multi-agent AI system with ease, leveraging the powerful and flexible framework provided by crewAI. Our goal is to enable your agents to collaborate effectively on complex tasks, maximizing their collective intelligence and capabilities.
+
+## Installation
+
+Ensure you have Python >=3.10 <3.14 installed on your system. This project uses [UV](https://docs.astral.sh/uv/) for dependency management and package handling, offering a seamless setup and execution experience.
+
+First, if you haven't already, install uv:
+
+```bash
+pip install uv
+```
+
+Next, navigate to your project directory and install the dependencies:
+
+(Optional) Lock the dependencies and install them by using the CLI command:
+```bash
+crewai install
+```
+### Customizing
+
+**Add your `OPENAI_API_KEY` into the `.env` file**
+
+- Modify `src/multi_dev/config/agents.yaml` to define your agents
+- Modify `src/multi_dev/config/tasks.yaml` to define your tasks
+- Modify `src/multi_dev/crew.py` to add your own logic, tools and specific args
+- Modify `src/multi_dev/main.py` to add custom inputs for your agents and tasks
+
+## Running the Project
+
+To kickstart your crew of AI agents and begin task execution, run this from the root folder of your project:
+
+```bash
+$ crewai run
+```
+
+This command initializes the multi-dev Crew, assembles the agents, and writes stage outputs to markdown files so you can inspect the pipeline without scrolling through the terminal:
+
+- `outputs/repo_analysis.md`
+- `outputs/module_boundaries.md`
+- `outputs/issues.md`
+- `outputs/workspace_plan.md`
+- `outputs/master_intake.md`
+- `outputs/master_dispatch.md`
+- `outputs/backend_node.md`
+- `outputs/frontend_node.md`
+- `outputs/tester_node.md`
+- `outputs/pr_drafts.md`
+- `outputs/execution_summary.md`
+- `outputs/execution_log.jsonl`
+- `outputs/github_state.json`
+- `outputs/node_workspaces.json`
+- `outputs/github_automation.md`
+- `outputs/reviewer_audit.md`
+- `outputs/master_decision.md`
+
+After each successful run, the CLI prints the generated artifact paths.
+
+By default, generated markdown artifacts use `简体中文`. You can override this with the `OUTPUT_LANGUAGE` environment variable.
+
+The prompts are grounded to the visible repository snapshot. New files or interfaces should be labeled as proposals rather than stated as existing facts.
+
+Quick smoke tests are usually faster with `CREW_RUN_MODE=fast`. In fast mode, the crew uses sequential execution, disables planning, lowers the default token budget, and trims the repository snapshot before sending context to the model.
+
+Set `CREW_EXECUTION_MODE=write` if you want backend/frontend/tester nodes to be allowed to modify the target repository through guarded file tools. The default is `plan`, which keeps the workflow in analysis-and-planning mode only.
+
+For stronger role isolation, you can also set comma-separated path scopes:
+
+- `CREW_BACKEND_PATHS=web-flask,web-file`
+- `CREW_FRONTEND_PATHS=web-vue`
+- `CREW_TEST_PATHS=tests,web-flask`
+
+When these are set, write tools reject edits outside the assigned prefixes.
+In `write` mode, the latest `outputs/master_dispatch.md` also acts as a dynamic approval layer: if `master` explicitly approves concrete `targets` for a node in `dispatch_contract.work_items`, that node may write those paths during the current run even when they are outside its static env prefix. This lets `master` truly authorize one-round bootstrap targets such as `tests/` without permanently widening the node's scope.
+
+## First-Version GitHub Integration
+
+The project now includes a first pass of **real Git/GitHub execution tools** for the workflow you described:
+
+- `master` can bootstrap a real GitHub repository and create real issues
+- `node` can prepare its own branch + local worktree, write code in that worktree, commit and push
+- `node` can create or update a real PR
+- `reviewer` / `master` can inspect branch diff summaries and the persisted GitHub state
+- `master` can submit native GitHub PR reviews (`COMMENT`, `APPROVE`, `REQUEST_CHANGES`)
+- `master` can merge a real PR when the final decision is `MERGE`
+
+Required environment variables:
+
+```bash
+GITHUB_TOKEN=ghp_xxx
+GITHUB_OWNER=your-user-or-org
+# Optional
+GITHUB_REPO=repo-name
+GITHUB_BASE_BRANCH=main
+GITHUB_REPO_VISIBILITY=private
+```
+
+Important implementation note:
+
+- `gh` CLI is **not required**; the current first version uses the GitHub REST API directly.
+- `git` **is required** locally for branch / worktree / commit / push.
+- When `GITHUB_TOKEN` is present, git push/fetch to `github.com` uses the token at runtime; it does not require `gh auth login`.
+- Node workspaces are stored under `outputs/worktrees/`, and are namespaced by target repository to avoid cross-run collisions.
+- The live issue / branch / PR / workspace mapping is persisted to `outputs/github_state.json`.
+- The local workspace registry used by file tools is persisted to `outputs/node_workspaces.json`.
+
+## First-Version Real CI/CD
+
+The project now includes a first pass of **real GitHub Actions CI/CD integration** on top of the Git/GitHub flow:
+
+- `master` can sync deployment secrets into GitHub repository secrets before dispatching CI/CD work
+- `node` can write real workflow files such as `.github/workflows/ci.yml` and `.github/workflows/deploy.yml`
+- `node` can commit, push, and open PRs for CI/CD changes in its own branch + worktree
+- `reviewer` / `master` can verify whether workflow files and repo secrets were actually configured
+
+
+Recommended deployment environment variables:
+
+```bash
+DEPLOY_HOST=35.217.150.106
+DEPLOY_PORT=22
+DEPLOY_USER=service
+DEPLOY_PATH=/srv/your-app
+DEPLOY_SSH_PRIVATE_KEY="-----BEGIN OPENSSH PRIVATE KEY-----..."
+# Optional
+DEPLOY_SUDO_PASSWORD=...
+DEPLOY_SERVICE_NAME=your-app
+CREW_CICD_ENABLED=true
+```
+
+Implementation note:
+
+- CI/CD secrets are uploaded through the GitHub Actions secrets API, not by writing plaintext into the repository.
+- `DEPLOY_SSH_PRIVATE_KEY` should live in local env / `.env`, then be synced to GitHub by `master`; do not commit it.
+- The synced secret names are tracked in `outputs/github_state.json` without storing their values.
+
+## Master-Node Workflow
+
+This project is now aligned to a single-entry `master/node` engineering workflow:
+
+1. `master` receives the requirement
+2. Internal specialists analyze the repo and boundaries
+3. `master` creates an intake summary and dispatch order
+4. `master` assigns work to backend / frontend / tester nodes
+5. Nodes work inside their scoped paths and optionally modify code in `write` mode
+6. `master` collects execution summaries and PR drafts
+7. `reviewer` performs an internal audit for `master`
+8. `master` makes the final decision: `MERGE`, `REWORK`, or `CONTINUE_DISPATCH`
+
+Two important execution principles now apply:
+
+- In `write` mode, approved bootstrap targets should be written first instead of being deferred out of caution.
+- `reviewer` is expected to send incorrect or overreaching work back; `master` can then narrow the next round and re-dispatch specific nodes.
+
+Important:
+
+- This is no longer only a planning shell: with valid GitHub credentials, the first version can perform **real** repo / issue / branch / worktree / commit / push / PR / merge actions.
+- It is still **not** a full remote runner platform yet: there are no isolated cloud runners, no automatic sandbox provisioning, and no production-grade permission model.
+
+## Understanding Your Crew
+
+The multi-dev Crew is composed of multiple AI agents, each with unique roles, goals, and tools. These agents collaborate on a series of tasks, defined in `config/tasks.yaml`, leveraging their collective skills to achieve complex objectives. The `config/agents.yaml` file outlines the capabilities and configurations of each agent in your crew.
+
+## Support
+
+For support, questions, or feedback regarding the MultiDev Crew or crewAI.
+- Visit our [documentation](https://docs.crewai.com)
+- Reach out to us through our [GitHub repository](https://github.com/joaomdmoura/crewai)
+- [Join our Discord](https://discord.com/invite/X4JWnZnxPb)
+- [Chat with our docs](https://chatg.pt/DWjSBZn)
+
+Let's create wonders together with the power and simplicity of crewAI.

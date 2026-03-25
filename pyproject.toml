@@ -1,0 +1,25 @@
+[project]
+name = "multi_dev"
+version = "0.1.0"
+description = "multi-dev using crewAI"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "crewai[tools]==1.11.1",
+    "pynacl>=1.6.2",
+]
+
+[project.scripts]
+multi_dev = "multi_dev.main:run"
+run_crew = "multi_dev.main:run"
+train = "multi_dev.main:train"
+replay = "multi_dev.main:replay"
+test = "multi_dev.main:test"
+run_with_trigger = "multi_dev.main:run_with_trigger"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.crewai]
+type = "crew"
