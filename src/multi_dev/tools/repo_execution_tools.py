@@ -269,6 +269,10 @@ def bootstrap_template_targets_for_node(node_name: str) -> tuple[str, ...]:
         "tests",
         "tests/__init__.py",
         "tests/smoke_test.py",
+        ".github",
+        ".github/workflows",
+        ".github/workflows/ci.yml",
+        ".github/workflows/deploy.yml",
     )
 
     if node_name == "backend_node":

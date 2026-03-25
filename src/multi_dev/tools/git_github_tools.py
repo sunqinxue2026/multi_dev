@@ -915,7 +915,10 @@ class GitHubCreateOrUpdatePRTool(BaseTool):
 class GitHubMergePRInput(BaseModel):
     pr_number: int = Field(..., ge=1, description="PR 编号。")
     merge_method: str = Field(default="squash", description="merge / squash / rebase。")
-    delete_branch: bool = Field(default=True, description="合并后是否删除远端分支。")
+    delete_branch: bool = Field(
+        default=False,
+        description="合并后是否删除远端分支。默认保留，只有用户明确要求时才删除。",
+    )
 
 
 class GitHubReviewPRInput(BaseModel):
@@ -996,6 +999,7 @@ class GitHubMergePRTool(BaseTool):
     name: str = "github_merge_pr"
     description: str = (
         "执行真实 GitHub PR merge，并更新 `outputs/github_state.json`。"
+        "默认保留远端分支，方便用户回看 node 的改动；只有显式传入 `delete_branch=true` 才会删除。"
     )
     args_schema: Type[BaseModel] = GitHubMergePRInput
 
@@ -1003,7 +1007,7 @@ class GitHubMergePRTool(BaseTool):
         self,
         pr_number: int,
         merge_method: str = "squash",
-        delete_branch: bool = True,
+        delete_branch: bool = False,
     ) -> str:
         owner, repo = repo_state()
         pr = github_api_request(
