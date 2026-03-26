@@ -211,6 +211,8 @@ master_intake_task:
     - 若 `github_enabled=true` 且 `execution_mode=write`，你必须把 GitHub 仓库、issue、branch、PR 当作本轮真实交付链路的一部分，而不是未来蓝图。
     - 在该模式下，GitHub 的最终决策者始终是 `master`；`reviewer` 只提供审计意见，`node` 不得自行合并。
     - 若用户没有明确指定技术栈、框架、脚手架或顶层目录，你不得在本任务中擅自引入 `FastAPI`、`Flask`、`Django`、`React`、`Vue`、`Vite`、`Next.js`、`Makefile`、`Dockerfile`、CI 工作流等实现细节。
+    - 在已有业务仓库场景下，若用户点名的是能力或界面位置（如 `/health`、Hero、购物车、smoke 测试），你必须继续用真实工具在现有目录中定位实际文件；不得因为某个你自己猜出的路径不存在，就把它写成阻塞项。
+    - 若工具已经命中了现有文件（例如 `src/**/*.py`、`frontend/src/**/*`、`tests/**/*.py`），你应优先引用这些真实文件，并在接单摘要里明确写成“已发现证据”；不要继续沿用 `frontend/index.html`、`frontend/cart.js`、`tests/smoke_test.py` 之类未被当前轮工具命中的猜测路径。
     - 在空仓 `write` 场景下，唯一允许的默认模板是中性最小骨架：根级 `pyproject.toml`、`src/{bootstrap_package_name}/`、可选 `frontend/`、`tests/`。不得扩写为 node 同名目录、框架特定目录或额外工具链。
     - 若 `bootstrap_fast_track=true`，你在本任务中最多只可点名以下中性目标：`pyproject.toml`、`src/{bootstrap_package_name}/`、`frontend/`、`tests/`；不得继续细化为 `models.py`、`main.py`、`Blueprint`、`fetch('/api/...')`、`pytest` 用例名等实现级细节。
   expected_output: >
@@ -281,10 +283,12 @@ master_dispatch_task:
     - 在 `write` 模式下，若需求本身是“创建/初始化/生成骨架”，你必须优先下发可执行的小步真实写入项，而不是只输出文档化计划；此时 `拟新增文件` / `拟新增目录` 应被视为待执行目标，而不是默认阻塞。
     - 在 `write` 模式下，不得把“谨慎”“待确认”“可后续再做”当作普遍性拒写理由；除非路径越界、需求缺失、或会覆盖现有无关资产，否则应先执行，再交给 reviewer 打回或要求修订。
     - 若 `github_enabled=true` 且 `execution_mode=write`，你必须先调用 `github_bootstrap_repo(...)` 确保仓库存在且本地 repo / remote / 默认分支就绪，再为每个实际派发项调用 `github_create_issue(...)` 创建真实 issue。
+    - 在已有业务仓库场景下，若某项 work item 的目标属于现有目录（如 `src/**`、`frontend/**`、`tests/**`），你必须先基于真实工具结果把它收敛到可执行的现有文件或已批准的新文件；不要只派目录级目标后让 node 自己猜。
     - 若 `cicd_enabled=true`，且用户本轮明确要求“CI/CD / 部署 / GitHub Actions / 自动发布”，你必须在派发前调用 `github_sync_cicd_secrets(...)`，把部署相关 secrets 真正写入当前 GitHub repo；不得只在文档里说“后续再配置”。
     - 在该模式下，你为每个被派发的 work item 都必须给出真实 `branch_name`，并建议唯一 `worktree_path`；这些值必须写入 `dispatch_contract.work_items`。
     - 在并行模式下，同一个 `node` 类型下允许出现多个逻辑执行单元；因此 `dispatch_contract.work_items` 中每一项都必须补充 `work_item_id` 与 `logical_node_id`。例如同为 `backend_node`，可以拆成 `backend_node.catalog`、`backend_node.order`。
     - 在该模式下，`dispatch_contract.work_items` 中每一项除现有字段外，还必须补充：`work_item_id`、`logical_node_id`、`worker_lane`、`github_issue_number`、`branch_name`、`worktree_path`、`pr_title`、`depends_on`。
+    - 在已有业务仓库场景下，若你已经通过工具看到了具体文件，`dispatch_contract.work_items[*].targets` 应尽量写成具体文件路径，而不是宽泛目录；同时可附加 `candidate_files` 供 node 直接读取，不得让 node 在现有仓库里凭空新建平行实现。
     - 若 `cicd_enabled=true` 且用户明确要求 CI/CD，本轮允许新增的中性 CI/CD 目标仅限：`.github/workflows/ci.yml`、`.github/workflows/deploy.yml`、`scripts/deploy.sh`。除非用户明确批准，否则不得擅自扩写为 Docker、Kubernetes、Terraform、Helm、ArgoCD 等额外体系。
     - 若用户已明确给出最小骨架路径清单，则调度单必须优先围绕这些路径派发，不得因为上游草稿更“丰富”就扩写为额外目标。
     - 若 `bootstrap_fast_track=true`，你必须跳过冗长 issue/workspace 复述，直接生成“最小真实写入调度单”；优先让 node 在本轮落盘，不要把篇幅花在背景说明上。
@@ -355,6 +359,8 @@ backend_node_task:
     - 若已派发给 `backend_node` 且 `execution_mode=write`，必须先调用真实工具完成写入，再写工作卡；不得把计划写在执行前面冒充结果。
     - 若同一轮有多个 `backend_node` work item 被派发给你，你必须逐个 work item 独立执行，不得把多个 work item 混到同一条 branch、同一个 worktree 或同一个 PR 中。
     - 若 `github_enabled=true` 且 `execution_mode=write`，你必须按 work item 如下顺序执行：1) 读取该 work item 的 `work_item_id`、`logical_node_id`、`worker_lane`、`github_issue_number`、`branch_name`、`worktree_path`；2) 仅接手 `worker_lane` 等于当前执行 lane 的项；3) 调用 `git_prepare_node_workspace(node_name=<当前执行 lane>, work_item_id=..., logical_node_id=..., ...)`；4) 在该 worktree 中调用文件写入工具；5) 调用 `git_commit_and_push(node_name=<当前执行 lane>, work_item_id=..., ...)`；6) 调用 `github_create_or_update_pr(node_name=<当前执行 lane>, work_item_id=..., logical_node_id=..., ...)`。不得跳过 branch / worktree / PR。
+    - 在已有业务仓库场景下，若 work item 的 `targets` 是目录或 glob（如 `src/**`），你必须先调用 `list_repo_files(...)` 与 `read_repo_file(...)` 找到真实现有文件，再修改该文件；只有在调度单明确批准 `拟新增文件` 时，才可新建文件。没有先做真实读取，不得直接宣称“未找到相关文件”或另起平行实现。
+    - 若 `dispatch_contract.work_items[*]` 提供了 `candidate_files`，你必须优先读取并修改这些文件；除非这些文件经真实读取确认无法承载目标，否则不得绕开它们另建新文件。
     - 若 `cicd_enabled=true` 且你被派发了 `.github/workflows/deploy.yml` 或 `scripts/deploy.sh`，必须直接落盘这些 CI/CD 文件；它们属于本轮真实交付，不是未来蓝图。
     - 在该场景下，部署脚本必须优先使用 `ssh` + `git pull` + 进程重启这一最小链路；除非用户明确要求，否则不要擅自引入 Docker、Kubernetes 或云原生编排。
     - 若 `bootstrap_fast_track=true`，且本轮接手的是创建型骨架任务，你的第一批有效动作必须是 `make_repo_directory` / `write_repo_file`；不要先输出大段分析、计划或验证矩阵。
@@ -407,6 +413,8 @@ frontend_node_task:
     - 在 `write` 模式下，若已接手明确的创建型前端 issue，却没有调用任何写入工具，你必须写出具体硬阻塞原因；不得用抽象谨慎理由替代执行。
     - 若同一轮有多个 `frontend_node` work item 被派发给你，你必须逐个 work item 独立执行，不得把多个 work item 混到同一条 branch、同一个 worktree 或同一个 PR 中。
     - 若 `github_enabled=true` 且 `execution_mode=write`，你必须按 work item 如下顺序执行：1) 读取该 work item 的 `work_item_id`、`logical_node_id`、`worker_lane`、`github_issue_number`、`branch_name`、`worktree_path`；2) 仅接手 `worker_lane` 等于当前执行 lane 的项；3) 调用 `git_prepare_node_workspace(node_name=<当前执行 lane>, work_item_id=..., logical_node_id=..., ...)`；4) 在该 worktree 中调用文件写入工具；5) 调用 `git_commit_and_push(node_name=<当前执行 lane>, work_item_id=..., ...)`；6) 调用 `github_create_or_update_pr(node_name=<当前执行 lane>, work_item_id=..., logical_node_id=..., ...)`。
+    - 在已有业务仓库场景下，若 work item 的 `targets` 是目录或 glob（如 `frontend/**`），你必须先调用 `list_repo_files(...)` 与 `read_repo_file(...)` 找到真实现有文件，再修改该文件；只有在调度单明确批准 `拟新增文件` 时，才可新建文件。若仓库里已存在前端入口文件，不得另起一个平行前端实现。
+    - 若 `dispatch_contract.work_items[*]` 提供了 `candidate_files`，你必须优先读取并修改这些文件；除非这些文件经真实读取确认无法承载目标，否则不得绕开它们另建新文件。
     - 若 `cicd_enabled=true` 且你被派发了前端可见的 CI/CD 目标（如发布页、静态校验页或需要配合的 workflow 文案文件），只可处理 master 已批准的那些具体路径；不得擅自扩写额外前端工程化体系。
     - 若 `bootstrap_fast_track=true`，你应优先落盘最小文件集合，再补充工作卡；不要把大段解释放在真实写入前面。
     - 若 `bootstrap_fast_track=true`，你只可落盘 `frontend/index.html`、`frontend/app.js`、`frontend/styles.css`。若上游派单写成 `package.json`、`vite.config.js`、`src/App.vue`、`src/main.tsx` 或其他路径，你必须降级为这三个中性模板目标并继续执行，不得因此停写。
@@ -456,6 +464,8 @@ tester_node_task:
     - 在 `write` 模式下，若 `tester_node` 接手的是创建型测试骨架任务（例如 `tests/`、`tests/__init__.py`、smoke 脚本、校验脚本），必须先调用 `make_repo_directory` / `write_repo_file` 完成真实创建，再写验证矩阵；不得只输出验证文档而不落盘。
     - 若同一轮有多个 `tester_node` work item 被派发给你，你必须逐个 work item 独立执行，不得把多个 work item 混到同一条 branch、同一个 worktree 或同一个 PR 中。
     - 若 `github_enabled=true` 且 `execution_mode=write`，你必须按 work item 如下顺序执行：1) 读取该 work item 的 `work_item_id`、`logical_node_id`、`worker_lane`、`github_issue_number`、`branch_name`、`worktree_path`；2) 仅接手 `worker_lane` 等于当前执行 lane 的项；3) 调用 `git_prepare_node_workspace(node_name=<当前执行 lane>, work_item_id=..., logical_node_id=..., ...)`；4) 在该 worktree 中调用文件写入工具；5) 调用 `git_commit_and_push(node_name=<当前执行 lane>, work_item_id=..., ...)`；6) 调用 `github_create_or_update_pr(node_name=<当前执行 lane>, work_item_id=..., logical_node_id=..., ...)`。
+    - 在已有业务仓库场景下，若 work item 的 `targets` 是目录或 glob（如 `tests/**`），你必须先调用 `list_repo_files(...)` 与 `read_repo_file(...)` 找到真实现有测试文件，再修改该文件；只有在调度单明确批准 `拟新增文件` 时，才可新建文件。
+    - 若 `dispatch_contract.work_items[*]` 提供了 `candidate_files`，你必须优先读取并修改这些文件；除非这些文件经真实读取确认无法承载目标，否则不得绕开它们另建新文件。
     - 若 `cicd_enabled=true` 且你被派发了 `.github/workflows/ci.yml`，必须直接落盘一个真实可运行的 GitHub Actions CI workflow；其检查命令必须以仓库可见证据为准，不得凭空假设不存在的工具链。
     - 若仓库没有真实测试基建证据，不得凭空创建复杂测试体系；最多只可创建轻量 smoke 脚本或文档化验证脚本，并在输出中说明。
     - 若 `execution_mode=write` 且你确实新增或修改了轻量验证文件，可在产出中列出“实际修改文件”，但不得把尚未运行的验证写成“已通过”。

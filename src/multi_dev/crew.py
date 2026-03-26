@@ -75,7 +75,7 @@ def default_worktree_path_for(
         os.getenv("TARGET_REPOSITORY_ROOT", str(Path.cwd()))
     ).expanduser().resolve()
     target = (
-        Path(__file__).resolve().parents[3]
+        Path(__file__).resolve().parents[2]
         / "outputs"
         / "worktrees"
         / repo_workspace_slug(repo_root)
@@ -85,7 +85,7 @@ def default_worktree_path_for(
 
 
 def load_issue_bindings() -> list[dict[str, object]]:
-    path = Path(__file__).resolve().parents[3] / "outputs" / "github_state.json"
+    path = Path(__file__).resolve().parents[2] / "outputs" / "github_state.json"
     if not path.exists():
         return []
     try:
@@ -105,6 +105,19 @@ def normalize_worker_lane_name(
     lane_index: int,
 ) -> str:
     candidate = raw_worker_lane.strip()
+    if "__" in node_name:
+        if candidate in {"", node_name}:
+            return node_name
+        if candidate.startswith(f"{node_name}__"):
+            return node_name
+    if candidate in {"backend", "backend_1"}:
+        return lane_name_for_node("backend_node", 1)
+    if candidate in {"frontend", "frontend_1"}:
+        return lane_name_for_node("frontend_node", 1)
+    if candidate == "frontend_2":
+        return lane_name_for_node("frontend_node", 2)
+    if candidate in {"tester", "tester_1"}:
+        return lane_name_for_node("tester_node", 1)
     if candidate.startswith(f"{node_name}__") or candidate == node_name:
         return candidate
     if logical_node_id.startswith(f"{node_name}__"):
@@ -840,7 +853,9 @@ class MultiDev:
             master_intake_suffix = (
                 "当前为 `direct_dispatch + write`，不得停留在“证据不足，先不派发”。\n"
                 "- 你必须先真实调用工具补齐最小证据：至少探测根级、后端、前端、测试/验证四类路径；\n"
+                "- 对已有业务仓库，至少补齐这 4 类真实证据之一：`src/**/*.py`、`frontend/src/**/*`、`frontend/**/*`、`tests/**/*.py`；\n"
                 "- 若用户需求已经点名具体能力（例如 `/health`、Hero 文案、购物车按钮、smoke 测试），你应围绕这些能力去定位真实文件，而不是只输出未知项；\n"
+                "- 不得因为某个猜测路径不存在，就把它写成阻塞；若 `frontend/index.html` 不存在，但 `frontend/src/App.jsx` 存在，你应继续围绕真实文件收敛；\n"
                 "- 输出必须压缩：只保留本轮真实需要的证据、风险和可派发结论，不要展开长篇规划。"
             )
         master_intake_task = self.configured_task(
@@ -860,6 +875,7 @@ class MultiDev:
                 "当前为 `direct_dispatch + write`，你的首要目标是生成可立即执行的最小真实派单，而不是继续做探测计划。\n"
                 "- 若 `master_intake` 已拿到真实文件证据，你必须直接派发真实写入 work item；\n"
                 "- 若 `github_enabled=true`，对每个实际派发的 work item 都必须先创建真实 GitHub issue，再把 `github_issue_number` 写入 `dispatch_contract`；\n"
+                "- 对已有业务仓库，`targets` 应尽量收敛到真实现有文件；不得把猜测路径写进派单，也不得让 node 在现有仓库里凭空新建平行实现；\n"
                 "- 你的正文应保持简短，只保留：派单原则、精简分工表、必要风险；\n"
                 "- 输出末尾必须附带完整 `dispatch_contract` JSON 代码块，且不得省略 `worker_lane`、`branch_name`、`worktree_path`、`github_issue_number`。"
             )
@@ -902,8 +918,12 @@ class MultiDev:
                 f"- 你只处理 `dispatch_contract.work_items` 中 `node=\"{base_node_name}\"`，且 `worker_lane=\"{lane_node_name}\"` 的项；"
                 "若当前 contract 未显式给出 `worker_lane`，仅 `__1` lane 可兜底接单，其余 lane 必须输出 `skipped`。\n"
                 f"- 所有 Git/GitHub 工具调用里的 `node_name` 参数必须使用 `{lane_node_name}`。\n"
+                "- 在已有业务仓库场景下，若 `targets` 是目录或 glob，你必须先用 `list_repo_files` / `read_repo_file` 找到真实现有文件，再开始修改；"
+                "只有 master 明确批准的 `拟新增文件` 才能直接新建。\n"
+                "- 若 `dispatch_contract.work_items[*]` 提供了 `candidate_files`，你必须优先读取并修改这些文件；不得绕开它们另起平行实现。\n"
                 "- 每个 work item 必须独立走完整链路：准备 worktree、真实写入、commit/push、创建或更新 PR；"
-                "不得把多个 work item 混到同一条 branch、同一个 worktree 或同一个 PR 中。"
+                "不得把多个 work item 混到同一条 branch、同一个 worktree 或同一个 PR 中。\n"
+                "- 若本节点没有留下真实工具痕迹（至少一次 repo 读取，以及写入或明确 GitHub 链路动作），本轮结果将直接视为未执行。"
             )
             lane_task = self.configured_task(
                 task_key,

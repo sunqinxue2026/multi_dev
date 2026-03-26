@@ -15,6 +15,7 @@ from multi_dev.tools.runtime_registry import (
     dispatched_work_items_for_node,
     workspace_binding_for,
 )
+from multi_dev.tools.git_github_tools import GitPrepareWorkspaceTool
 
 
 IGNORED_PARTS = {
@@ -81,6 +82,7 @@ def execution_log_path() -> Path:
 
 
 def target_repository_root(node_name: str = "") -> Path:
+    ensure_workspace_ready_for_access(node_name)
     if node_name:
         workspace = workspace_binding_for(node_name=node_name)
         if isinstance(workspace, dict):
@@ -176,6 +178,48 @@ def ensure_workspace_ready_for_write(node_name: str) -> None:
     clean_node_name = str(node_name).strip()
     if not clean_node_name or execution_mode() != "write" or not github_enabled():
         return
+    dispatched_items = dispatched_work_items_for_node(clean_node_name)
+    if not dispatched_items:
+        return
+    workspace = workspace_binding_for(node_name=clean_node_name)
+    worktree_path = str(workspace.get("worktree_path", "")).strip()
+    if worktree_path:
+        root = Path(worktree_path).expanduser()
+        if root.exists() and root.is_dir():
+            return
+
+    primary_item = dispatched_items[0]
+    branch_name = str(primary_item.get("branch_name", "")).strip()
+    logical_node_id = str(primary_item.get("logical_node_id", "")).strip()
+    work_item_id = str(primary_item.get("work_item_id", "")).strip()
+    github_issue_number = int(primary_item.get("github_issue_number", 0) or 0)
+    worktree_path = str(primary_item.get("worktree_path", "")).strip()
+    if branch_name:
+        GitPrepareWorkspaceTool()._run(
+            node_name=clean_node_name,
+            branch_name=branch_name,
+            work_item_id=work_item_id,
+            logical_node_id=logical_node_id,
+            issue_number=github_issue_number,
+            base_branch="main",
+            worktree_path=worktree_path,
+        )
+        workspace = workspace_binding_for(node_name=clean_node_name)
+        resolved_worktree_path = str(workspace.get("worktree_path", "")).strip()
+        if resolved_worktree_path:
+            root = Path(resolved_worktree_path).expanduser()
+            if root.exists() and root.is_dir():
+                return
+    raise RuntimeError(
+        f"{clean_node_name} 在执行写入前必须先调用 `git_prepare_node_workspace`，"
+        "当前未找到可用 worktree。"
+    )
+
+
+def ensure_workspace_ready_for_access(node_name: str) -> None:
+    clean_node_name = str(node_name).strip()
+    if not clean_node_name or execution_mode() != "write" or not github_enabled():
+        return
     if not dispatched_work_items_for_node(clean_node_name):
         return
     workspace = workspace_binding_for(node_name=clean_node_name)
@@ -184,10 +228,7 @@ def ensure_workspace_ready_for_write(node_name: str) -> None:
         root = Path(worktree_path).expanduser()
         if root.exists() and root.is_dir():
             return
-    raise RuntimeError(
-        f"{clean_node_name} 在执行写入前必须先调用 `git_prepare_node_workspace`，"
-        "当前未找到可用 worktree。"
-    )
+    ensure_workspace_ready_for_write(clean_node_name)
 
 
 def resolve_repo_path(

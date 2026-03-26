@@ -210,6 +210,20 @@ def lane_index_for_node_name(node_name: str) -> int:
     return 1
 
 
+def worker_lane_aliases_for_node_name(node_name: str) -> set[str]:
+    clean = str(node_name).strip()
+    base_name = base_node_name(clean)
+    lane_index = lane_index_for_node_name(clean)
+    aliases = {clean}
+    if base_name == "backend_node":
+        aliases.update({"backend", f"backend_{lane_index}"})
+    elif base_name == "frontend_node":
+        aliases.update({"frontend", f"frontend_{lane_index}"})
+    elif base_name == "tester_node":
+        aliases.update({"tester", f"tester_{lane_index}"})
+    return {alias for alias in aliases if alias}
+
+
 def dispatched_work_items_for_node(
     node_name: str,
     *,
@@ -227,6 +241,7 @@ def dispatched_work_items_for_node(
     clean_node_name = str(node_name).strip()
     requested_base_node = base_node_name(clean_node_name)
     requested_lane = lane_index_for_node_name(clean_node_name)
+    requested_lane_aliases = worker_lane_aliases_for_node_name(clean_node_name)
     lane_mode = requested_base_node != clean_node_name
 
     matches: list[dict[str, Any]] = []
@@ -244,7 +259,7 @@ def dispatched_work_items_for_node(
         item_worker_lane = str(item.get("worker_lane", "")).strip()
         if lane_mode:
             if item_worker_lane:
-                if item_worker_lane != clean_node_name:
+                if item_worker_lane not in requested_lane_aliases:
                     continue
             elif requested_lane != 1:
                 continue

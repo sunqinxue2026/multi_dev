@@ -8,6 +8,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Type
 
@@ -293,6 +294,33 @@ def git_push_branch(repo_root: Path, branch_name: str, set_upstream: bool = True
     run_git(args, cwd=repo_root)
 
 
+def git_branch_diff_payload(
+    repo_root: Path,
+    branch_name: str,
+    base_branch: str = "main",
+    max_lines: int = 200,
+) -> dict[str, str]:
+    stat = run_git(
+        ["diff", "--stat", f"{base_branch}...{branch_name}"],
+        cwd=repo_root,
+        check=False,
+    ).strip()
+    patch = run_git(
+        ["diff", f"{base_branch}...{branch_name}"],
+        cwd=repo_root,
+        check=False,
+    )
+    patch_lines = patch.splitlines()
+    if len(patch_lines) > max_lines:
+        patch = "\n".join(patch_lines[:max_lines]) + "\n...[truncated]"
+    return {
+        "branch": branch_name,
+        "base": base_branch,
+        "stat": stat or "<no diff stat>",
+        "patch": patch.strip() or "<no patch>",
+    }
+
+
 def ensure_local_branch(repo_root: Path, branch_name: str, base_branch: str) -> None:
     local_branches = run_git(["branch", "--list", branch_name], cwd=repo_root, check=False)
     if local_branches.strip():
@@ -381,6 +409,18 @@ def upsert_pr_state(pr_payload: dict[str, Any]) -> None:
             return
     prs.append(pr_payload)
     save_github_state(state)
+
+
+def append_execution_log(action: str, relative_path: str, details: dict[str, Any]) -> None:
+    path = outputs_dir() / "execution_log.jsonl"
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "path": relative_path,
+        "details": details,
+    }
+    with path.open("a", encoding="utf-8") as file_handle:
+        file_handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def upsert_pr_review_state(review_payload: dict[str, Any]) -> None:
@@ -867,6 +907,22 @@ class GitCommitAndPushTool(BaseTool):
             return f"{node_name} 没有需要提交的改动。"
 
         git_push_branch(repo_root, resolved_branch, set_upstream=True)
+        diff_payload = git_branch_diff_payload(
+            repo_root=repo_root,
+            branch_name=resolved_branch,
+            base_branch=str(workspace.get("base_branch", "")).strip() or "main",
+        )
+        append_execution_log(
+            action="git_branch_diff_summary",
+            relative_path=resolved_branch,
+            details={
+                "node": node_name,
+                "work_item_id": work_item_id or str(workspace.get("work_item_id", "")).strip(),
+                "logical_node_id": str(workspace.get("logical_node_id", "")).strip(),
+                "base_branch": diff_payload["base"],
+                "stat": diff_payload["stat"],
+            },
+        )
 
         state = load_github_state()
         issues = state.setdefault("issues", [])
@@ -877,13 +933,18 @@ class GitCommitAndPushTool(BaseTool):
             elif issue.get("node") != node_name:
                 continue
             issue["status"] = "in_review"
+            issue["diff_summary"] = diff_payload
+        for pr in state.setdefault("pull_requests", []):
+            if work_item_id and str(pr.get("work_item_id", "")).strip() == work_item_id:
+                pr["diff_summary"] = diff_payload
         save_github_state(state)
 
         return (
             f"{node_name} 已提交并推送。\n"
             f"- work_item_id: {work_item_id or str(workspace.get('work_item_id', '')).strip() or '未绑定'}\n"
             f"- branch: {resolved_branch}\n"
-            f"- commit: {detail}"
+            f"- commit: {detail}\n"
+            f"- diff_stat: {diff_payload['stat']}"
         )
 
 
