@@ -8,11 +8,21 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Type
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
+
+from multi_dev.tools.runtime_registry import (
+    load_json_file,
+    load_workspace_registry,
+    save_json_file,
+    save_workspace_registry,
+    set_workspace_binding,
+    workspace_binding_for,
+)
 
 
 def project_root() -> Path:
@@ -56,23 +66,6 @@ def repo_workspace_slug(repo_root: Path) -> str:
     return f"{name or 'repo'}-{digest}"
 
 
-def load_json_file(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return default
-
-
-def save_json_file(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
 def load_github_state() -> dict[str, Any]:
     return load_json_file(
         github_state_path(),
@@ -81,6 +74,7 @@ def load_github_state() -> dict[str, Any]:
             "issues": [],
             "pull_requests": [],
             "node_workspaces": {},
+            "workspaces_by_work_item": {},
             "repo_secrets": [],
             "pull_request_reviews": [],
         },
@@ -92,11 +86,11 @@ def save_github_state(payload: dict[str, Any]) -> None:
 
 
 def load_node_workspaces() -> dict[str, Any]:
-    return load_json_file(node_workspaces_path(), {})
+    return load_workspace_registry()
 
 
 def save_node_workspaces(payload: dict[str, Any]) -> None:
-    save_json_file(node_workspaces_path(), payload)
+    save_workspace_registry(payload)
 
 
 def github_token() -> str:
@@ -300,6 +294,33 @@ def git_push_branch(repo_root: Path, branch_name: str, set_upstream: bool = True
     run_git(args, cwd=repo_root)
 
 
+def git_branch_diff_payload(
+    repo_root: Path,
+    branch_name: str,
+    base_branch: str = "main",
+    max_lines: int = 200,
+) -> dict[str, str]:
+    stat = run_git(
+        ["diff", "--stat", f"{base_branch}...{branch_name}"],
+        cwd=repo_root,
+        check=False,
+    ).strip()
+    patch = run_git(
+        ["diff", f"{base_branch}...{branch_name}"],
+        cwd=repo_root,
+        check=False,
+    )
+    patch_lines = patch.splitlines()
+    if len(patch_lines) > max_lines:
+        patch = "\n".join(patch_lines[:max_lines]) + "\n...[truncated]"
+    return {
+        "branch": branch_name,
+        "base": base_branch,
+        "stat": stat or "<no diff stat>",
+        "patch": patch.strip() or "<no patch>",
+    }
+
+
 def ensure_local_branch(repo_root: Path, branch_name: str, base_branch: str) -> None:
     local_branches = run_git(["branch", "--list", branch_name], cwd=repo_root, check=False)
     if local_branches.strip():
@@ -390,6 +411,18 @@ def upsert_pr_state(pr_payload: dict[str, Any]) -> None:
     save_github_state(state)
 
 
+def append_execution_log(action: str, relative_path: str, details: dict[str, Any]) -> None:
+    path = outputs_dir() / "execution_log.jsonl"
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "path": relative_path,
+        "details": details,
+    }
+    with path.open("a", encoding="utf-8") as file_handle:
+        file_handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 def upsert_pr_review_state(review_payload: dict[str, Any]) -> None:
     state = load_github_state()
     reviews = state.setdefault("pull_request_reviews", [])
@@ -419,15 +452,20 @@ def upsert_repo_secret_state(secret_payload: dict[str, Any]) -> None:
 def set_node_workspace_state(node_name: str, payload: dict[str, Any]) -> None:
     state = load_github_state()
     state.setdefault("node_workspaces", {})[node_name] = payload
+    work_item_id = str(payload.get("work_item_id", "")).strip()
+    if work_item_id:
+        state.setdefault("workspaces_by_work_item", {})[work_item_id] = payload
     save_github_state(state)
 
-    workspaces = load_node_workspaces()
-    workspaces[node_name] = payload
-    save_node_workspaces(workspaces)
+    set_workspace_binding(
+        node_name=node_name,
+        payload=payload,
+        work_item_id=work_item_id,
+    )
 
 
-def workspace_for_node(node_name: str) -> dict[str, Any]:
-    return load_node_workspaces().get(node_name, {})
+def workspace_for_node(node_name: str, work_item_id: str = "") -> dict[str, Any]:
+    return workspace_binding_for(node_name=node_name, work_item_id=work_item_id)
 
 
 def cleanup_worktree_path(repo_root: Path, target_path: Path) -> None:
@@ -444,6 +482,54 @@ def cleanup_worktree_path(repo_root: Path, target_path: Path) -> None:
                 target_path.unlink()
             except FileNotFoundError:
                 pass
+
+
+def default_worktree_path(
+    repo_root: Path,
+    *,
+    node_name: str,
+    work_item_id: str,
+    logical_node_id: str,
+    branch_name: str,
+) -> Path:
+    repo_slug = repo_workspace_slug(repo_root)
+    return (
+        worktrees_root()
+        / repo_slug
+        / f"{node_name}-{sanitized_branch_fragment(work_item_id or logical_node_id or branch_name)}"
+    ).resolve()
+
+
+def resolve_worktree_target_path(
+    repo_root: Path,
+    *,
+    node_name: str,
+    work_item_id: str,
+    logical_node_id: str,
+    branch_name: str,
+    requested_path: str,
+) -> Path:
+    default_path = default_worktree_path(
+        repo_root,
+        node_name=node_name,
+        work_item_id=work_item_id,
+        logical_node_id=logical_node_id,
+        branch_name=branch_name,
+    )
+    clean_requested = requested_path.strip()
+    if not clean_requested:
+        return default_path
+
+    candidate = Path(clean_requested).expanduser()
+    if not candidate.is_absolute():
+        candidate = (worktrees_root() / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+
+    safe_root = worktrees_root().resolve()
+    if candidate == safe_root or safe_root in candidate.parents:
+        return candidate
+    return default_path
 
 
 def github_repo_public_key(owner: str, repo: str) -> dict[str, Any]:
@@ -595,8 +681,10 @@ class GitHubCreateIssueInput(BaseModel):
     body: str = Field(..., description="Issue 正文。")
     labels: list[str] = Field(default_factory=list, description="Issue labels。")
     node_name: str = Field(default="", description="负责的 node。")
+    logical_node_id: str = Field(default="", description="逻辑 node id，例如 backend_node.catalog。")
     issue_key: str = Field(default="", description="内部 Issue ID，例如 MVP-001。")
     branch_name: str = Field(default="", description="建议绑定的分支名。")
+    work_item_id: str = Field(default="", description="work item id。")
 
 
 class GitHubCreateIssueTool(BaseTool):
@@ -612,8 +700,10 @@ class GitHubCreateIssueTool(BaseTool):
         body: str,
         labels: list[str] | None = None,
         node_name: str = "",
+        logical_node_id: str = "",
         issue_key: str = "",
         branch_name: str = "",
+        work_item_id: str = "",
     ) -> str:
         owner, repo = repo_state()
         payload = {
@@ -631,8 +721,10 @@ class GitHubCreateIssueTool(BaseTool):
             "title": response.get("title", title),
             "html_url": response.get("html_url", ""),
             "node": node_name,
+            "logical_node_id": logical_node_id,
             "issue_key": issue_key,
             "branch_name": branch_name,
+            "work_item_id": work_item_id or issue_key,
             "status": "open",
         }
         upsert_issue_state(issue_payload)
@@ -705,6 +797,8 @@ class GitHubSyncCICDSecretsTool(BaseTool):
 class GitPrepareWorkspaceInput(BaseModel):
     node_name: str = Field(..., description="节点名称，如 backend_node。")
     branch_name: str = Field(..., description="该 node 专属分支名。")
+    work_item_id: str = Field(default="", description="work item id。")
+    logical_node_id: str = Field(default="", description="逻辑 node id。")
     issue_number: int = Field(default=0, ge=0, description="关联的 GitHub issue 编号。")
     base_branch: str = Field(default="main", description="从哪个基础分支切出。")
     worktree_path: str = Field(default="", description="可选，显式指定 worktree 目录。")
@@ -722,6 +816,8 @@ class GitPrepareWorkspaceTool(BaseTool):
         self,
         node_name: str,
         branch_name: str,
+        work_item_id: str = "",
+        logical_node_id: str = "",
         issue_number: int = 0,
         base_branch: str = "main",
         worktree_path: str = "",
@@ -731,16 +827,13 @@ class GitPrepareWorkspaceTool(BaseTool):
         ensure_local_git_identity(repo_root)
         git_fetch_origin(repo_root)
         ensure_local_branch(repo_root, branch_name, base_branch)
-        repo_slug = repo_workspace_slug(repo_root)
-
-        target_path = (
-            Path(worktree_path).expanduser().resolve()
-            if worktree_path.strip()
-            else (
-                worktrees_root()
-                / repo_slug
-                / f"{node_name}-{sanitized_branch_fragment(branch_name)}"
-            ).resolve()
+        target_path = resolve_worktree_target_path(
+            repo_root,
+            node_name=node_name,
+            work_item_id=work_item_id,
+            logical_node_id=logical_node_id,
+            branch_name=branch_name,
+            requested_path=worktree_path,
         )
 
         if target_path.exists():
@@ -757,6 +850,8 @@ class GitPrepareWorkspaceTool(BaseTool):
 
         payload = {
             "node_name": node_name,
+            "logical_node_id": logical_node_id,
+            "work_item_id": work_item_id,
             "branch_name": branch_name,
             "issue_number": issue_number,
             "base_branch": base_branch,
@@ -765,6 +860,8 @@ class GitPrepareWorkspaceTool(BaseTool):
         set_node_workspace_state(node_name, payload)
         return (
             f"Node workspace 已准备：{node_name}\n"
+            f"- work_item_id: {work_item_id or '未绑定'}\n"
+            f"- logical_node_id: {logical_node_id or '未指定'}\n"
             f"- branch: {branch_name}\n"
             f"- worktree: {target_path}\n"
             f"- issue_number: {issue_number or '未绑定'}"
@@ -774,6 +871,7 @@ class GitPrepareWorkspaceTool(BaseTool):
 class GitCommitAndPushInput(BaseModel):
     node_name: str = Field(..., description="节点名称。")
     commit_message: str = Field(..., description="提交信息。")
+    work_item_id: str = Field(default="", description="work item id。")
     branch_name: str = Field(default="", description="显式分支名；默认取 node workspace 记录。")
 
 
@@ -788,11 +886,15 @@ class GitCommitAndPushTool(BaseTool):
         self,
         node_name: str,
         commit_message: str,
+        work_item_id: str = "",
         branch_name: str = "",
     ) -> str:
-        workspace = workspace_for_node(node_name)
+        workspace = workspace_for_node(node_name, work_item_id=work_item_id)
         if not workspace:
-            raise RuntimeError(f"未找到 node workspace：{node_name}")
+            raise RuntimeError(
+                f"未找到 node workspace：{node_name}"
+                + (f" / {work_item_id}" if work_item_id else "")
+            )
 
         repo_root = Path(workspace["worktree_path"]).resolve()
         resolved_branch = branch_name or str(workspace.get("branch_name", "")).strip()
@@ -805,23 +907,51 @@ class GitCommitAndPushTool(BaseTool):
             return f"{node_name} 没有需要提交的改动。"
 
         git_push_branch(repo_root, resolved_branch, set_upstream=True)
+        diff_payload = git_branch_diff_payload(
+            repo_root=repo_root,
+            branch_name=resolved_branch,
+            base_branch=str(workspace.get("base_branch", "")).strip() or "main",
+        )
+        append_execution_log(
+            action="git_branch_diff_summary",
+            relative_path=resolved_branch,
+            details={
+                "node": node_name,
+                "work_item_id": work_item_id or str(workspace.get("work_item_id", "")).strip(),
+                "logical_node_id": str(workspace.get("logical_node_id", "")).strip(),
+                "base_branch": diff_payload["base"],
+                "stat": diff_payload["stat"],
+            },
+        )
 
         state = load_github_state()
         issues = state.setdefault("issues", [])
         for issue in issues:
-            if issue.get("node") == node_name:
-                issue["status"] = "in_review"
+            if work_item_id:
+                if str(issue.get("work_item_id", "")).strip() != work_item_id:
+                    continue
+            elif issue.get("node") != node_name:
+                continue
+            issue["status"] = "in_review"
+            issue["diff_summary"] = diff_payload
+        for pr in state.setdefault("pull_requests", []):
+            if work_item_id and str(pr.get("work_item_id", "")).strip() == work_item_id:
+                pr["diff_summary"] = diff_payload
         save_github_state(state)
 
         return (
             f"{node_name} 已提交并推送。\n"
+            f"- work_item_id: {work_item_id or str(workspace.get('work_item_id', '')).strip() or '未绑定'}\n"
             f"- branch: {resolved_branch}\n"
-            f"- commit: {detail}"
+            f"- commit: {detail}\n"
+            f"- diff_stat: {diff_payload['stat']}"
         )
 
 
 class GitHubCreateOrUpdatePRInput(BaseModel):
     node_name: str = Field(..., description="节点名称。")
+    logical_node_id: str = Field(default="", description="逻辑 node id。")
+    work_item_id: str = Field(default="", description="work item id。")
     title: str = Field(..., description="PR 标题。")
     body: str = Field(..., description="PR 正文。")
     head_branch: str = Field(..., description="head branch。")
@@ -846,6 +976,8 @@ class GitHubCreateOrUpdatePRTool(BaseTool):
         base_branch: str = "main",
         issue_number: int = 0,
         draft: bool = False,
+        logical_node_id: str = "",
+        work_item_id: str = "",
     ) -> str:
         owner, repo = repo_state()
         query = urllib.parse.urlencode(
@@ -888,6 +1020,8 @@ class GitHubCreateOrUpdatePRTool(BaseTool):
             "title": pr.get("title", title),
             "html_url": pr.get("html_url", ""),
             "node": node_name,
+            "logical_node_id": logical_node_id,
+            "work_item_id": work_item_id,
             "head_branch": head_branch,
             "base_branch": base_branch,
             "issue_number": issue_number,
@@ -895,18 +1029,24 @@ class GitHubCreateOrUpdatePRTool(BaseTool):
         }
         upsert_pr_state(pr_payload)
 
-        if issue_number:
+        if issue_number or work_item_id:
             state = load_github_state()
             for issue in state.setdefault("issues", []):
-                if issue.get("number") == issue_number:
-                    issue["pr_number"] = pr_payload["number"]
-                    issue["status"] = "in_review"
+                if issue_number and issue.get("number") != issue_number:
+                    continue
+                if work_item_id and str(issue.get("work_item_id", "")).strip() != work_item_id:
+                    continue
+                issue["status"] = "in_review"
+                issue["pr_number"] = pr_payload["number"]
+                issue["status"] = "in_review"
             save_github_state(state)
 
         return (
             f"PR 已就绪：#{pr_payload['number']} {pr_payload['title']}\n"
             f"- url: {pr_payload['html_url']}\n"
             f"- node: {node_name}\n"
+            f"- logical_node_id: {logical_node_id or '未指定'}\n"
+            f"- work_item_id: {work_item_id or '未绑定'}\n"
             f"- head: {head_branch}\n"
             f"- base: {base_branch}"
         )

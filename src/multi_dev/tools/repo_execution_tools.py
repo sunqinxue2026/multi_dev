@@ -8,6 +8,15 @@ from typing import Type
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from multi_dev.tools.runtime_registry import (
+    active_work_item_id_for_node,
+    approved_targets_for_node as approved_dispatch_targets_for_node,
+    base_node_name,
+    dispatched_work_items_for_node,
+    workspace_binding_for,
+)
+from multi_dev.tools.git_github_tools import GitPrepareWorkspaceTool
+
 
 IGNORED_PARTS = {
     ".git",
@@ -72,24 +81,10 @@ def execution_log_path() -> Path:
     return outputs_dir() / "execution_log.jsonl"
 
 
-def node_workspaces_path() -> Path:
-    return outputs_dir() / "node_workspaces.json"
-
-
-def load_node_workspaces() -> dict[str, object]:
-    path = node_workspaces_path()
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def target_repository_root(node_name: str = "") -> Path:
+    ensure_workspace_ready_for_access(node_name)
     if node_name:
-        workspace = load_node_workspaces().get(node_name, {})
+        workspace = workspace_binding_for(node_name=node_name)
         if isinstance(workspace, dict):
             worktree_path = str(workspace.get("worktree_path", "")).strip()
             if worktree_path:
@@ -153,6 +148,15 @@ def should_ignore(relative_path: Path) -> bool:
 
 
 def append_execution_log(action: str, relative_path: str, details: dict[str, str]) -> None:
+    node_name = str(details.get("node", "")).strip()
+    if node_name:
+        workspace = workspace_binding_for(node_name=node_name)
+        work_item_id = str(workspace.get("work_item_id", "")).strip()
+        logical_node_id = str(workspace.get("logical_node_id", "")).strip()
+        if work_item_id and "work_item_id" not in details:
+            details["work_item_id"] = work_item_id
+        if logical_node_id and "logical_node_id" not in details:
+            details["logical_node_id"] = logical_node_id
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "action": action,
@@ -161,6 +165,70 @@ def append_execution_log(action: str, relative_path: str, details: dict[str, str
     }
     with execution_log_path().open("a", encoding="utf-8") as file_handle:
         file_handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def github_enabled() -> bool:
+    value = os.getenv("GITHUB_ENABLED", "").strip().lower()
+    if value:
+        return value in {"1", "true", "yes", "on"}
+    return bool(os.getenv("GITHUB_TOKEN", "").strip() and os.getenv("GITHUB_OWNER", "").strip())
+
+
+def ensure_workspace_ready_for_write(node_name: str) -> None:
+    clean_node_name = str(node_name).strip()
+    if not clean_node_name or execution_mode() != "write" or not github_enabled():
+        return
+    dispatched_items = dispatched_work_items_for_node(clean_node_name)
+    if not dispatched_items:
+        return
+    workspace = workspace_binding_for(node_name=clean_node_name)
+    worktree_path = str(workspace.get("worktree_path", "")).strip()
+    if worktree_path:
+        root = Path(worktree_path).expanduser()
+        if root.exists() and root.is_dir():
+            return
+
+    primary_item = dispatched_items[0]
+    branch_name = str(primary_item.get("branch_name", "")).strip()
+    logical_node_id = str(primary_item.get("logical_node_id", "")).strip()
+    work_item_id = str(primary_item.get("work_item_id", "")).strip()
+    github_issue_number = int(primary_item.get("github_issue_number", 0) or 0)
+    worktree_path = str(primary_item.get("worktree_path", "")).strip()
+    if branch_name:
+        GitPrepareWorkspaceTool()._run(
+            node_name=clean_node_name,
+            branch_name=branch_name,
+            work_item_id=work_item_id,
+            logical_node_id=logical_node_id,
+            issue_number=github_issue_number,
+            base_branch="main",
+            worktree_path=worktree_path,
+        )
+        workspace = workspace_binding_for(node_name=clean_node_name)
+        resolved_worktree_path = str(workspace.get("worktree_path", "")).strip()
+        if resolved_worktree_path:
+            root = Path(resolved_worktree_path).expanduser()
+            if root.exists() and root.is_dir():
+                return
+    raise RuntimeError(
+        f"{clean_node_name} 在执行写入前必须先调用 `git_prepare_node_workspace`，"
+        "当前未找到可用 worktree。"
+    )
+
+
+def ensure_workspace_ready_for_access(node_name: str) -> None:
+    clean_node_name = str(node_name).strip()
+    if not clean_node_name or execution_mode() != "write" or not github_enabled():
+        return
+    if not dispatched_work_items_for_node(clean_node_name):
+        return
+    workspace = workspace_binding_for(node_name=clean_node_name)
+    worktree_path = str(workspace.get("worktree_path", "")).strip()
+    if worktree_path:
+        root = Path(worktree_path).expanduser()
+        if root.exists() and root.is_dir():
+            return
+    ensure_workspace_ready_for_write(clean_node_name)
 
 
 def resolve_repo_path(
@@ -183,6 +251,21 @@ def normalize_prefixes(prefixes: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
+def expand_glob_patterns(glob_pattern: str) -> tuple[str, ...]:
+    pattern = str(glob_pattern).strip() or "**/*"
+    match = re.search(r"\{([^{}]+)\}", pattern)
+    if not match:
+        return (pattern,)
+
+    prefix = pattern[: match.start()]
+    suffix = pattern[match.end() :]
+    variants = [item.strip() for item in match.group(1).split(",") if item.strip()]
+    expanded: list[str] = []
+    for variant in variants:
+        expanded.extend(expand_glob_patterns(prefix + variant + suffix))
+    return tuple(dict.fromkeys(expanded))
+
+
 def path_matches_prefix(relative: Path, prefix: str) -> bool:
     normalized_prefix = prefix.strip().strip("/")
     if not normalized_prefix:
@@ -194,55 +277,14 @@ def path_matches_prefix(relative: Path, prefix: str) -> bool:
     )
 
 
-def extract_json_block(markdown_text: str) -> dict[str, object] | None:
-    patterns = [
-        r"```json\s*(\{.*?\})\s*```",
-        r"```JSON\s*(\{.*?\})\s*```",
-    ]
-    for pattern in patterns:
-        matches = re.findall(pattern, markdown_text, flags=re.DOTALL)
-        for candidate in reversed(matches):
-            try:
-                parsed = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict):
-                return parsed
-    return None
-
-
 def approved_targets_for_node(node_name: str) -> tuple[str, ...]:
     if not node_name:
         return ()
-
-    dispatch_path = outputs_dir() / "master_dispatch.md"
-    if not dispatch_path.exists():
-        return ()
-
-    contract = extract_json_block(
-        dispatch_path.read_text(encoding="utf-8", errors="ignore")
+    work_item_id = active_work_item_id_for_node(node_name)
+    targets = approved_dispatch_targets_for_node(
+        node_name,
+        work_item_id=work_item_id,
     )
-    if not contract:
-        return ()
-
-    work_items = contract.get("work_items", [])
-    if not isinstance(work_items, list):
-        return ()
-
-    approved_targets: list[str] = []
-    for item in work_items:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("node", "")).strip() != node_name:
-            continue
-
-        targets = item.get("targets", [])
-        if isinstance(targets, list):
-            for target in targets:
-                if isinstance(target, str) and target.strip():
-                    approved_targets.append(target.strip().strip("/"))
-
-    targets = tuple(dict.fromkeys(target for target in approved_targets if target))
     if not bootstrap_fast_track_enabled():
         return targets
 
@@ -251,6 +293,7 @@ def approved_targets_for_node(node_name: str) -> tuple[str, ...]:
 
 
 def bootstrap_template_targets_for_node(node_name: str) -> tuple[str, ...]:
+    resolved_node_name = base_node_name(node_name)
     package_name = bootstrap_package_name()
     shared_backend = (
         "pyproject.toml",
@@ -275,11 +318,11 @@ def bootstrap_template_targets_for_node(node_name: str) -> tuple[str, ...]:
         ".github/workflows/deploy.yml",
     )
 
-    if node_name == "backend_node":
+    if resolved_node_name == "backend_node":
         return shared_backend
-    if node_name == "frontend_node":
+    if resolved_node_name == "frontend_node":
         return shared_frontend
-    if node_name == "tester_node":
+    if resolved_node_name == "tester_node":
         return shared_tester
     return ()
 
@@ -335,7 +378,18 @@ class ListRepoFilesTool(BaseTool):
         root = target_repository_root(node_name=self.node_name)
         matches: list[str] = []
 
-        for path in sorted(root.glob(glob_pattern)):
+        expanded_patterns = expand_glob_patterns(glob_pattern)
+        seen: set[str] = set()
+        all_paths: list[Path] = []
+        for pattern in expanded_patterns:
+            for path in root.glob(pattern):
+                marker = str(path)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                all_paths.append(path)
+
+        for path in sorted(all_paths):
             try:
                 relative = path.relative_to(root)
             except ValueError:
@@ -434,6 +488,7 @@ class MakeRepoDirectoryTool(BaseTool):
     def _run(self, relative_path: str) -> str:
         if execution_mode() != "write":
             return "拒绝创建目录：当前 CREW_EXECUTION_MODE 不是 `write`。"
+        ensure_workspace_ready_for_write(self.node_name)
 
         _, path, relative = resolve_repo_path(relative_path, node_name=self.node_name)
         ensure_allowed_prefix(
@@ -467,6 +522,7 @@ class WriteRepoFileTool(BaseTool):
     def _run(self, relative_path: str, content: str) -> str:
         if execution_mode() != "write":
             return "拒绝写入：当前 CREW_EXECUTION_MODE 不是 `write`。"
+        ensure_workspace_ready_for_write(self.node_name)
 
         _, path, relative = resolve_repo_path(relative_path, node_name=self.node_name)
         ensure_allowed_prefix(
@@ -516,6 +572,7 @@ class ReplaceRepoTextTool(BaseTool):
     ) -> str:
         if execution_mode() != "write":
             return "拒绝替换：当前 CREW_EXECUTION_MODE 不是 `write`。"
+        ensure_workspace_ready_for_write(self.node_name)
 
         _, path, relative = resolve_repo_path(relative_path, node_name=self.node_name)
         ensure_allowed_prefix(

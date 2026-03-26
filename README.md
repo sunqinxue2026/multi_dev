@@ -46,11 +46,16 @@ This command initializes the multi-dev Crew, assembles the agents, and writes st
 - `outputs/backend_node.md`
 - `outputs/frontend_node.md`
 - `outputs/tester_node.md`
+- `outputs/node_lanes/*.md`（当同类 node 池大小大于 1 时）
 - `outputs/pr_drafts.md`
 - `outputs/execution_summary.md`
 - `outputs/execution_log.jsonl`
 - `outputs/github_state.json`
 - `outputs/node_workspaces.json`
+- `outputs/dispatch_rounds.json`
+- `outputs/work_items.json`
+- `outputs/pr_bindings.json`
+- `outputs/ownership_rules.json`
 - `outputs/github_automation.md`
 - `outputs/reviewer_audit.md`
 - `outputs/master_decision.md`
@@ -73,6 +78,29 @@ For stronger role isolation, you can also set comma-separated path scopes:
 
 When these are set, write tools reject edits outside the assigned prefixes.
 In `write` mode, the latest `outputs/master_dispatch.md` also acts as a dynamic approval layer: if `master` explicitly approves concrete `targets` for a node in `dispatch_contract.work_items`, that node may write those paths during the current run even when they are outside its static env prefix. This lets `master` truly authorize one-round bootstrap targets such as `tests/` without permanently widening the node's scope.
+
+## Mature Parallel Dispatch
+
+`multi_dev` 现在已经进入可运行的并行执行形态，不再只是蓝图：
+
+- `master` 在 `dispatch_contract.work_items` 中可以为同类 node 派发多个 work item
+- 每个 work item 现在支持 `worker_lane`，用于把任务绑定到具体执行 lane，例如 `backend_node__1`
+- backend / frontend lane 可以并行执行；tester lane 在依赖 backend/frontend 输出时会自动后置收口
+- 每个 lane 都有自己独立的 worktree、branch、PR 绑定；运行态会持续写入：
+  - `outputs/dispatch_rounds.json`
+  - `outputs/work_items.json`
+  - `outputs/pr_bindings.json`
+  - `outputs/ownership_rules.json`
+
+可通过环境变量控制同类 node 池大小：
+
+```bash
+CREW_BACKEND_POOL_SIZE=2
+CREW_FRONTEND_POOL_SIZE=2
+CREW_TESTER_POOL_SIZE=2
+```
+
+如果 `master_dispatch.md` 漏写了 `worker_lane`，框架会在 `master_dispatch` 落盘后做一次正规化分配，避免多个 lane 抢同一个 work item。
 
 ## First-Version GitHub Integration
 
@@ -178,6 +206,20 @@ Important:
 
 - This is no longer only a planning shell: with valid GitHub credentials, the first version can perform **real** repo / issue / branch / worktree / commit / push / PR / merge actions.
 - It is still **not** a full remote runner platform yet: there are no isolated cloud runners, no automatic sandbox provisioning, and no production-grade permission model.
+
+## Parallel Dispatch Blueprint
+
+面向更进一步演进的“单 `master` + 多 backend / frontend / tester node 并行协作”设计蓝图已写入：
+
+- `docs/parallel_dispatch_blueprint.md`
+
+这份蓝图重点定义了：
+
+- `work_item` 状态机
+- `issue ↔ node ↔ branch ↔ worktree ↔ PR` 映射
+- ownership / 路径授权规则
+- 新项目 bootstrap 与已有项目迭代的并行调度差异
+- 建议新增的运行态文件与代码挂载点
 
 ## Understanding Your Crew
 

@@ -12,6 +12,12 @@ from datetime import datetime
 from pathlib import Path
 
 from multi_dev.crew import MultiDev
+from multi_dev.services import sync_dispatch_runtime_state
+from multi_dev.tools.runtime_registry import base_node_name
+from multi_dev.tools.git_github_tools import (
+    GitHubMergePRTool,
+    GitHubReviewPRTool,
+)
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
@@ -121,6 +127,10 @@ ARTIFACT_PATHS = [
     "outputs/execution_log.jsonl",
     "outputs/github_state.json",
     "outputs/node_workspaces.json",
+    "outputs/dispatch_rounds.json",
+    "outputs/work_items.json",
+    "outputs/pr_bindings.json",
+    "outputs/ownership_rules.json",
     "outputs/github_automation.md",
     "outputs/reviewer_audit.md",
     "outputs/master_decision.md",
@@ -179,6 +189,9 @@ def clean_previous_artifacts() -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             path.unlink()
+    lane_root = outputs_root() / "node_lanes"
+    if lane_root.exists():
+        shutil.rmtree(lane_root)
     if rounds_root().exists():
         shutil.rmtree(rounds_root())
         rounds_root().mkdir(parents=True, exist_ok=True)
@@ -516,6 +529,13 @@ def archive_round_artifacts(round_index: int) -> None:
     for path in artifact_paths():
         if path.exists():
             shutil.copy2(path, round_dir / path.name)
+    lane_root = outputs_root() / "node_lanes"
+    if lane_root.exists():
+        shutil.copytree(
+            lane_root,
+            round_dir / "node_lanes",
+            dirs_exist_ok=True,
+        )
 
 
 def execution_log_entries() -> list[dict[str, object]]:
@@ -534,6 +554,17 @@ def execution_log_entries() -> list[dict[str, object]]:
         if isinstance(parsed, dict):
             entries.append(parsed)
     return entries
+
+
+def github_state_or_none() -> dict[str, object] | None:
+    path = output_path("outputs/github_state.json")
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def dispatch_contract_or_none() -> dict[str, object] | None:
@@ -572,7 +603,7 @@ def nodes_with_real_writes(entries: list[dict[str, object]]) -> set[str]:
         details = entry.get("details", {})
         if not isinstance(details, dict):
             continue
-        node = str(details.get("node", "")).strip()
+        node = base_node_name(str(details.get("node", "")).strip())
         if node:
             nodes.add(node)
     return nodes
@@ -620,11 +651,33 @@ def write_entries_by_node(
         details = entry.get("details", {})
         if not isinstance(details, dict):
             continue
-        node = str(details.get("node", "")).strip()
+        node = base_node_name(str(details.get("node", "")).strip())
         if not node:
             continue
         grouped.setdefault(node, []).append(entry)
     return grouped
+
+
+def aggregate_node_lane_outputs() -> None:
+    outputs = outputs_root()
+    lane_root = outputs / "node_lanes"
+    if not lane_root.exists():
+        return
+
+    for base_node in ("backend_node", "frontend_node", "tester_node"):
+        segments: list[str] = []
+        for lane_file in sorted(lane_root.glob(f"{base_node}*.md")):
+            body = lane_file.read_text(encoding="utf-8", errors="ignore").strip()
+            if not body:
+                continue
+            segments.append(f"## {lane_file.stem}\n\n{body}")
+
+        target_path = outputs / f"{base_node}.md"
+        if segments:
+            target_path.write_text(
+                "# 聚合节点输出\n\n" + "\n\n".join(segments) + "\n",
+                encoding="utf-8",
+            )
 
 
 def path_authorized_for_targets(
@@ -1107,6 +1160,157 @@ def build_round_summary(
     return json.dumps(summary, ensure_ascii=False)
 
 
+def review_body_for_pr(
+    *,
+    decision: str,
+    pr_payload: dict[str, object],
+    reviewer_contract: dict[str, object] | None,
+    decision_contract: dict[str, object],
+) -> str:
+    node_name = str(pr_payload.get("node", "")).strip()
+    logical_node_id = str(pr_payload.get("logical_node_id", "")).strip()
+    work_item_id = str(pr_payload.get("work_item_id", "")).strip()
+    stop_reason = str(decision_contract.get("stop_reason", "")).strip()
+    rework_items = reviewer_contract.get("rework_items", []) if reviewer_contract else []
+    if not isinstance(rework_items, list):
+        rework_items = []
+    related_items = [
+        str(item).strip()
+        for item in rework_items
+        if str(item).strip()
+        and (
+            node_name in str(item)
+            or logical_node_id in str(item)
+            or work_item_id in str(item)
+        )
+    ]
+
+    if decision == "REWORK":
+        lines = [
+            "master 已审阅本 PR，本轮结论为 `REQUEST_CHANGES`。",
+            "",
+            "需要修复后再提交：",
+        ]
+        if related_items:
+            lines.extend(f"- {item}" for item in related_items)
+        elif stop_reason:
+            lines.append(f"- {stop_reason}")
+        else:
+            lines.append("- 本 PR 未满足本轮调度单与 reviewer 审计要求。")
+        return "\n".join(lines)
+
+    if decision == "CONTINUE_DISPATCH":
+        lines = [
+            "master 已审阅本 PR，本轮暂不合并，保留为后续继续派发的输入。",
+        ]
+        if stop_reason:
+            lines.extend(["", f"- 当前阶段说明：{stop_reason}"])
+        return "\n".join(lines)
+
+    return "master 已审阅本 PR，允许进入合并阶段。"
+
+
+def should_skip_review(
+    *,
+    reviews: list[dict[str, object]],
+    pr_number: int,
+    event: str,
+) -> bool:
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        if int(review.get("pull_request_number", 0) or 0) != pr_number:
+            continue
+        if str(review.get("event", "")).upper() == event:
+            return True
+    return False
+
+
+def apply_github_decision_actions(
+    *,
+    inputs: dict[str, str],
+    decision_contract: dict[str, object],
+    reviewer_contract: dict[str, object] | None,
+) -> None:
+    if inputs.get("github_enabled") != "true":
+        return
+
+    state = github_state_or_none()
+    if not state:
+        return
+
+    pull_requests = state.get("pull_requests", [])
+    if not isinstance(pull_requests, list) or not pull_requests:
+        return
+
+    decision = str(decision_contract.get("decision", "")).upper()
+    rerun_nodes = decision_contract.get("rerun_nodes", [])
+    if not isinstance(rerun_nodes, list):
+        rerun_nodes = []
+    rerun_nodes = [str(node).strip() for node in rerun_nodes if str(node).strip()]
+
+    failed_nodes = reviewer_contract.get("failed_nodes", []) if reviewer_contract else []
+    if not isinstance(failed_nodes, list):
+        failed_nodes = []
+    failed_nodes = [str(node).strip() for node in failed_nodes if str(node).strip()]
+
+    if decision == "REWORK":
+        target_nodes = set(rerun_nodes or failed_nodes)
+        event = "REQUEST_CHANGES"
+    elif decision == "CONTINUE_DISPATCH":
+        target_nodes = set(rerun_nodes or failed_nodes)
+        event = "COMMENT"
+    elif decision == "MERGE":
+        target_nodes = set()
+        event = "APPROVE"
+    else:
+        return
+
+    reviews = state.get("pull_request_reviews", [])
+    if not isinstance(reviews, list):
+        reviews = []
+
+    review_tool = GitHubReviewPRTool()
+    merge_tool = GitHubMergePRTool()
+
+    for pr in pull_requests:
+        if not isinstance(pr, dict):
+            continue
+        pr_number = int(pr.get("number", 0) or 0)
+        if not pr_number:
+            continue
+        node_name = base_node_name(str(pr.get("node", "")).strip())
+        if decision in {"REWORK", "CONTINUE_DISPATCH"} and target_nodes and node_name not in target_nodes:
+            continue
+        if decision == "MERGE" and failed_nodes and node_name in set(failed_nodes):
+            continue
+        if should_skip_review(reviews=reviews, pr_number=pr_number, event=event):
+            continue
+
+        body = review_body_for_pr(
+            decision=decision,
+            pr_payload=pr,
+            reviewer_contract=reviewer_contract,
+            decision_contract=decision_contract,
+        )
+        review_event = event
+        try:
+            review_tool._run(pr_number=pr_number, event=review_event, body=body)
+        except Exception as exc:
+            fallback_body = body
+            if review_event != "COMMENT":
+                fallback_body = (
+                    f"{body}\n\n"
+                    f"> 注：原计划执行 `{review_event}`，但当前 GitHub 身份/权限返回错误：{exc}。"
+                    " 已自动降级为 `COMMENT` 留痕。"
+                )
+            review_event = "COMMENT"
+            review_tool._run(pr_number=pr_number, event=review_event, body=fallback_body)
+
+        if decision == "MERGE":
+            merge_tool._run(pr_number=pr_number, merge_method="squash", delete_branch=False)
+
+
 def kickoff_round(inputs: dict[str, str]) -> None:
     MultiDev().crew().kickoff(inputs=inputs)
 
@@ -1118,13 +1322,12 @@ def run_round_loop(base_inputs: dict[str, str]) -> None:
         current_inputs["round_index"] = str(round_index)
         print(f"\n===== Round {round_index}/{max_rounds()} =====")
         kickoff_round(current_inputs)
+        aggregate_node_lane_outputs()
         enforce_bootstrap_write_progress(round_index=round_index, inputs=current_inputs)
         stabilize_bootstrap_fast_track_outputs(
             round_index=round_index,
             inputs=current_inputs,
         )
-        archive_round_artifacts(round_index)
-
         decision_contract = load_json_contract(output_path("outputs/master_decision.md"))
         reviewer_contract: dict[str, object] | None = None
         reviewer_path = output_path("outputs/reviewer_audit.md")
@@ -1132,6 +1335,20 @@ def run_round_loop(base_inputs: dict[str, str]) -> None:
             reviewer_contract = extract_json_block(
                 reviewer_path.read_text(encoding="utf-8", errors="ignore")
             )
+        sync_dispatch_runtime_state(
+            round_index=round_index,
+            inputs=current_inputs,
+            dispatch_contract=dispatch_contract_or_none(),
+            reviewer_contract=reviewer_contract,
+            decision_contract=decision_contract,
+            execution_entries=execution_log_entries(),
+        )
+        apply_github_decision_actions(
+            inputs=current_inputs,
+            decision_contract=decision_contract,
+            reviewer_contract=reviewer_contract,
+        )
+        archive_round_artifacts(round_index)
 
         decision = str(decision_contract.get("decision", "")).upper()
         rerun_nodes = decision_contract.get("rerun_nodes", [])
