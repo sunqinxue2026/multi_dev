@@ -444,6 +444,54 @@ def cleanup_worktree_path(repo_root: Path, target_path: Path) -> None:
                 pass
 
 
+def default_worktree_path(
+    repo_root: Path,
+    *,
+    node_name: str,
+    work_item_id: str,
+    logical_node_id: str,
+    branch_name: str,
+) -> Path:
+    repo_slug = repo_workspace_slug(repo_root)
+    return (
+        worktrees_root()
+        / repo_slug
+        / f"{node_name}-{sanitized_branch_fragment(work_item_id or logical_node_id or branch_name)}"
+    ).resolve()
+
+
+def resolve_worktree_target_path(
+    repo_root: Path,
+    *,
+    node_name: str,
+    work_item_id: str,
+    logical_node_id: str,
+    branch_name: str,
+    requested_path: str,
+) -> Path:
+    default_path = default_worktree_path(
+        repo_root,
+        node_name=node_name,
+        work_item_id=work_item_id,
+        logical_node_id=logical_node_id,
+        branch_name=branch_name,
+    )
+    clean_requested = requested_path.strip()
+    if not clean_requested:
+        return default_path
+
+    candidate = Path(clean_requested).expanduser()
+    if not candidate.is_absolute():
+        candidate = (worktrees_root() / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+
+    safe_root = worktrees_root().resolve()
+    if candidate == safe_root or safe_root in candidate.parents:
+        return candidate
+    return default_path
+
+
 def github_repo_public_key(owner: str, repo: str) -> dict[str, Any]:
     response = github_api_request(
         "GET",
@@ -739,18 +787,13 @@ class GitPrepareWorkspaceTool(BaseTool):
         ensure_local_git_identity(repo_root)
         git_fetch_origin(repo_root)
         ensure_local_branch(repo_root, branch_name, base_branch)
-        repo_slug = repo_workspace_slug(repo_root)
-
-        target_path = (
-            Path(worktree_path).expanduser().resolve()
-            if worktree_path.strip()
-            else (
-                worktrees_root()
-                / repo_slug
-                / (
-                    f"{node_name}-{sanitized_branch_fragment(work_item_id or logical_node_id or branch_name)}"
-                )
-            ).resolve()
+        target_path = resolve_worktree_target_path(
+            repo_root,
+            node_name=node_name,
+            work_item_id=work_item_id,
+            logical_node_id=logical_node_id,
+            branch_name=branch_name,
+            requested_path=worktree_path,
         )
 
         if target_path.exists():

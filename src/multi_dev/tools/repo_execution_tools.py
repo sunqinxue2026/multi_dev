@@ -12,6 +12,7 @@ from multi_dev.tools.runtime_registry import (
     active_work_item_id_for_node,
     approved_targets_for_node as approved_dispatch_targets_for_node,
     base_node_name,
+    dispatched_work_items_for_node,
     workspace_binding_for,
 )
 
@@ -162,6 +163,31 @@ def append_execution_log(action: str, relative_path: str, details: dict[str, str
     }
     with execution_log_path().open("a", encoding="utf-8") as file_handle:
         file_handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def github_enabled() -> bool:
+    value = os.getenv("GITHUB_ENABLED", "").strip().lower()
+    if value:
+        return value in {"1", "true", "yes", "on"}
+    return bool(os.getenv("GITHUB_TOKEN", "").strip() and os.getenv("GITHUB_OWNER", "").strip())
+
+
+def ensure_workspace_ready_for_write(node_name: str) -> None:
+    clean_node_name = str(node_name).strip()
+    if not clean_node_name or execution_mode() != "write" or not github_enabled():
+        return
+    if not dispatched_work_items_for_node(clean_node_name):
+        return
+    workspace = workspace_binding_for(node_name=clean_node_name)
+    worktree_path = str(workspace.get("worktree_path", "")).strip()
+    if worktree_path:
+        root = Path(worktree_path).expanduser()
+        if root.exists() and root.is_dir():
+            return
+    raise RuntimeError(
+        f"{clean_node_name} 在执行写入前必须先调用 `git_prepare_node_workspace`，"
+        "当前未找到可用 worktree。"
+    )
 
 
 def resolve_repo_path(
@@ -421,6 +447,7 @@ class MakeRepoDirectoryTool(BaseTool):
     def _run(self, relative_path: str) -> str:
         if execution_mode() != "write":
             return "拒绝创建目录：当前 CREW_EXECUTION_MODE 不是 `write`。"
+        ensure_workspace_ready_for_write(self.node_name)
 
         _, path, relative = resolve_repo_path(relative_path, node_name=self.node_name)
         ensure_allowed_prefix(
@@ -454,6 +481,7 @@ class WriteRepoFileTool(BaseTool):
     def _run(self, relative_path: str, content: str) -> str:
         if execution_mode() != "write":
             return "拒绝写入：当前 CREW_EXECUTION_MODE 不是 `write`。"
+        ensure_workspace_ready_for_write(self.node_name)
 
         _, path, relative = resolve_repo_path(relative_path, node_name=self.node_name)
         ensure_allowed_prefix(
@@ -503,6 +531,7 @@ class ReplaceRepoTextTool(BaseTool):
     ) -> str:
         if execution_mode() != "write":
             return "拒绝替换：当前 CREW_EXECUTION_MODE 不是 `write`。"
+        ensure_workspace_ready_for_write(self.node_name)
 
         _, path, relative = resolve_repo_path(relative_path, node_name=self.node_name)
         ensure_allowed_prefix(

@@ -1,6 +1,8 @@
 import json
+import hashlib
 import os
 import re
+from pathlib import Path
 
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai.agents.agent_builder.base_agent import BaseAgent
@@ -51,6 +53,65 @@ def lane_name_for_node(base_node_name: str, lane_index: int) -> str:
     return f"{base_node_name}__{lane_index}"
 
 
+def repo_workspace_slug(repo_root: Path) -> str:
+    digest = hashlib.sha1(str(repo_root).encode("utf-8")).hexdigest()[:8]
+    name = re.sub(r"[^0-9A-Za-z._-]+", "-", repo_root.name).strip("-")
+    return f"{name or 'repo'}-{digest}"
+
+
+def sanitized_fragment(value: str) -> str:
+    cleaned = str(value).replace("/", "--")
+    cleaned = re.sub(r"[^0-9A-Za-z._-]+", "-", cleaned).strip("-")
+    return cleaned or "task"
+
+
+def default_worktree_path_for(
+    node_name: str,
+    work_item_id: str,
+    logical_node_id: str,
+    branch_name: str,
+) -> str:
+    repo_root = Path(
+        os.getenv("TARGET_REPOSITORY_ROOT", str(Path.cwd()))
+    ).expanduser().resolve()
+    target = (
+        Path(__file__).resolve().parents[3]
+        / "outputs"
+        / "worktrees"
+        / repo_workspace_slug(repo_root)
+        / f"{node_name}-{sanitized_fragment(work_item_id or logical_node_id or branch_name)}"
+    )
+    return str(target.resolve())
+
+
+def load_issue_bindings() -> list[dict[str, object]]:
+    path = Path(__file__).resolve().parents[3] / "outputs" / "github_state.json"
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    issues = payload.get("issues", [])
+    if not isinstance(issues, list):
+        return []
+    return [issue for issue in issues if isinstance(issue, dict)]
+
+
+def normalize_worker_lane_name(
+    node_name: str,
+    logical_node_id: str,
+    raw_worker_lane: str,
+    lane_index: int,
+) -> str:
+    candidate = raw_worker_lane.strip()
+    if candidate.startswith(f"{node_name}__") or candidate == node_name:
+        return candidate
+    if logical_node_id.startswith(f"{node_name}__"):
+        return logical_node_id.split(".", 1)[0]
+    return lane_name_for_node(node_name, lane_index)
+
+
 def normalize_master_dispatch_artifact_callback(*_args, **_kwargs) -> None:
     dispatch_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -70,6 +131,7 @@ def normalize_master_dispatch_artifact_callback(*_args, **_kwargs) -> None:
         return
 
     lane_counters: dict[str, int] = {}
+    issues = load_issue_bindings()
     active_nodes: list[str] = []
     for item in work_items:
         if not isinstance(item, dict):
@@ -77,16 +139,73 @@ def normalize_master_dispatch_artifact_callback(*_args, **_kwargs) -> None:
         node = str(item.get("node", "")).strip()
         if not node:
             continue
-        if node not in active_nodes:
+        logical_node_id = str(item.get("logical_node_id", "")).strip()
+        if logical_node_id and logical_node_id not in active_nodes:
+            active_nodes.append(logical_node_id)
+        elif node not in active_nodes:
             active_nodes.append(node)
-        worker_lane = str(item.get("worker_lane", "")).strip()
-        if not worker_lane:
-            lane_counters[node] = lane_counters.get(node, 0) + 1
-            lane_index = ((lane_counters[node] - 1) % pool_size_for_node(node)) + 1
-            worker_lane = lane_name_for_node(node, lane_index)
-            item["worker_lane"] = worker_lane
-        if not str(item.get("logical_node_id", "")).strip():
-            item["logical_node_id"] = worker_lane
+
+        lane_counters[node] = lane_counters.get(node, 0) + 1
+        lane_index = ((lane_counters[node] - 1) % pool_size_for_node(node)) + 1
+        worker_lane = normalize_worker_lane_name(
+            node,
+            logical_node_id,
+            str(item.get("worker_lane", "")),
+            lane_index,
+        )
+        item["worker_lane"] = worker_lane
+        if not logical_node_id:
+            logical_node_id = worker_lane
+            item["logical_node_id"] = logical_node_id
+
+        matched_issue = None
+        for issue in issues:
+            issue_number = str(issue.get("number", "")).strip()
+            if issue_number and issue_number == str(
+                item.get("github_issue_number") or item.get("issue_id") or ""
+            ).strip():
+                matched_issue = issue
+                break
+            if logical_node_id and logical_node_id == str(
+                issue.get("logical_node_id", "")
+            ).strip():
+                matched_issue = issue
+                break
+            if str(item.get("work_item_id", "")).strip() and str(
+                item.get("work_item_id", "")
+            ).strip() == str(issue.get("work_item_id", "")).strip():
+                matched_issue = issue
+                break
+        if matched_issue:
+            issue_number = int(matched_issue.get("number", 0) or 0)
+            if issue_number:
+                item["github_issue_number"] = issue_number
+                item["issue_id"] = str(issue_number)
+            if not str(item.get("branch_name", "")).strip():
+                item["branch_name"] = str(matched_issue.get("branch_name", "")).strip()
+            if not str(item.get("pr_title", "")).strip():
+                item["pr_title"] = str(matched_issue.get("title", "")).strip()
+
+        branch_name = str(item.get("branch_name", "")).strip()
+        if not str(item.get("worktree_path", "")).strip():
+            item["worktree_path"] = default_worktree_path_for(
+                worker_lane,
+                str(item.get("work_item_id", "")).strip(),
+                logical_node_id,
+                branch_name,
+            )
+
+        must_use_tools = item.get("must_use_tools", [])
+        if not isinstance(must_use_tools, list):
+            must_use_tools = []
+        for tool_name in (
+            "git_prepare_node_workspace",
+            "git_commit_and_push",
+            "github_create_or_update_pr",
+        ):
+            if tool_name not in must_use_tools:
+                must_use_tools.append(tool_name)
+        item["must_use_tools"] = must_use_tools
 
     if active_nodes and not contract.get("active_nodes"):
         contract["active_nodes"] = active_nodes
@@ -129,7 +248,14 @@ class MultiDev:
 
         model_name = os.getenv("OPENAI_MODEL_NAME", "qwen-plus")
         base_url = os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_BASE_URL")
-        default_max_tokens = "1000" if self.run_mode() == "fast" else "2200"
+        if self.run_mode() == "fast":
+            default_max_tokens = (
+                "2200"
+                if self.direct_dispatch_enabled() and self.execution_mode() == "write"
+                else "1000"
+            )
+        else:
+            default_max_tokens = "2200"
         max_tokens = int(os.getenv("CREW_LLM_MAX_TOKENS", default_max_tokens))
 
         return LLM(
@@ -709,22 +835,41 @@ class MultiDev:
         master_intake_context: list[Task] = []
         if not self.bootstrap_fast_track_enabled() and not self.direct_dispatch_enabled():
             master_intake_context = [repo_analysis_task, module_boundary_task]
+        master_intake_suffix = ""
+        if self.direct_dispatch_enabled() and self.execution_mode() == "write":
+            master_intake_suffix = (
+                "当前为 `direct_dispatch + write`，不得停留在“证据不足，先不派发”。\n"
+                "- 你必须先真实调用工具补齐最小证据：至少探测根级、后端、前端、测试/验证四类路径；\n"
+                "- 若用户需求已经点名具体能力（例如 `/health`、Hero 文案、购物车按钮、smoke 测试），你应围绕这些能力去定位真实文件，而不是只输出未知项；\n"
+                "- 输出必须压缩：只保留本轮真实需要的证据、风险和可派发结论，不要展开长篇规划。"
+            )
         master_intake_task = self.configured_task(
             "master_intake_task",
             agent_instance=master_controller,
             context=master_intake_context,
             name="master_intake_task",
+            description_suffix=master_intake_suffix,
         )
 
         master_dispatch_context = [master_intake_task]
         if not self.bootstrap_fast_track_enabled() and not self.direct_dispatch_enabled():
             master_dispatch_context.extend([issue_drafting_task, workspace_plan_task])
+        master_dispatch_suffix = ""
+        if self.direct_dispatch_enabled() and self.execution_mode() == "write":
+            master_dispatch_suffix = (
+                "当前为 `direct_dispatch + write`，你的首要目标是生成可立即执行的最小真实派单，而不是继续做探测计划。\n"
+                "- 若 `master_intake` 已拿到真实文件证据，你必须直接派发真实写入 work item；\n"
+                "- 若 `github_enabled=true`，对每个实际派发的 work item 都必须先创建真实 GitHub issue，再把 `github_issue_number` 写入 `dispatch_contract`；\n"
+                "- 你的正文应保持简短，只保留：派单原则、精简分工表、必要风险；\n"
+                "- 输出末尾必须附带完整 `dispatch_contract` JSON 代码块，且不得省略 `worker_lane`、`branch_name`、`worktree_path`、`github_issue_number`。"
+            )
         master_dispatch_task = self.configured_task(
             "master_dispatch_task",
             agent_instance=master_controller,
             context=master_dispatch_context,
             name="master_dispatch_task",
             callback=normalize_master_dispatch_artifact_callback,
+            description_suffix=master_dispatch_suffix,
         )
 
         lane_specs = self.build_execution_lane_specs()
