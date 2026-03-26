@@ -165,6 +165,10 @@ class MultiDev:
     def bootstrap_fast_track_enabled(self) -> bool:
         return self.bootstrap_mode() == "new" and self.execution_mode() == "write"
 
+    def direct_dispatch_enabled(self) -> bool:
+        value = os.getenv("CREW_DIRECT_DISPATCH", "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
     def node_allowed_prefixes(self, env_name: str) -> tuple[str, ...]:
         raw_value = os.getenv(env_name, "").strip()
         if not raw_value:
@@ -360,7 +364,6 @@ class MultiDev:
         return Agent(
             config=self.agents_config["master_manager"],  # type: ignore[index]
             llm=self.shared_llm(),
-            tools=self.master_tools(),
             verbose=True,
             allow_delegation=True,
             reasoning=False,
@@ -669,9 +672,8 @@ class MultiDev:
 
         planning_enabled = self.planning_enabled()
         output_log_file = os.getenv("CREW_OUTPUT_LOG_FILE") or None
-        run_mode = self.run_mode()
-        process = Process.sequential if run_mode == "fast" else Process.hierarchical
-        manager_agent = None if run_mode == "fast" else self.master_manager()
+        process = Process.sequential
+        manager_agent = None
 
         master_controller = self.master_controller()
         repo_analyst = self.repo_analyst()
@@ -705,7 +707,7 @@ class MultiDev:
         )
 
         master_intake_context: list[Task] = []
-        if not self.bootstrap_fast_track_enabled():
+        if not self.bootstrap_fast_track_enabled() and not self.direct_dispatch_enabled():
             master_intake_context = [repo_analysis_task, module_boundary_task]
         master_intake_task = self.configured_task(
             "master_intake_task",
@@ -715,7 +717,7 @@ class MultiDev:
         )
 
         master_dispatch_context = [master_intake_task]
-        if not self.bootstrap_fast_track_enabled():
+        if not self.bootstrap_fast_track_enabled() and not self.direct_dispatch_enabled():
             master_dispatch_context.extend([issue_drafting_task, workspace_plan_task])
         master_dispatch_task = self.configured_task(
             "master_dispatch_task",
@@ -837,7 +839,7 @@ class MultiDev:
             name="master_decision_task",
         )
 
-        if self.bootstrap_fast_track_enabled():
+        if self.bootstrap_fast_track_enabled() or self.direct_dispatch_enabled():
             tasks = [
                 master_intake_task,
                 master_dispatch_task,
