@@ -14,6 +14,15 @@ from typing import Any, Type
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from multi_dev.tools.runtime_registry import (
+    load_json_file,
+    load_workspace_registry,
+    save_json_file,
+    save_workspace_registry,
+    set_workspace_binding,
+    workspace_binding_for,
+)
+
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[3]
@@ -56,23 +65,6 @@ def repo_workspace_slug(repo_root: Path) -> str:
     return f"{name or 'repo'}-{digest}"
 
 
-def load_json_file(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return default
-
-
-def save_json_file(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
 def load_github_state() -> dict[str, Any]:
     return load_json_file(
         github_state_path(),
@@ -81,6 +73,7 @@ def load_github_state() -> dict[str, Any]:
             "issues": [],
             "pull_requests": [],
             "node_workspaces": {},
+            "workspaces_by_work_item": {},
             "repo_secrets": [],
             "pull_request_reviews": [],
         },
@@ -92,11 +85,11 @@ def save_github_state(payload: dict[str, Any]) -> None:
 
 
 def load_node_workspaces() -> dict[str, Any]:
-    return load_json_file(node_workspaces_path(), {})
+    return load_workspace_registry()
 
 
 def save_node_workspaces(payload: dict[str, Any]) -> None:
-    save_json_file(node_workspaces_path(), payload)
+    save_workspace_registry(payload)
 
 
 def github_token() -> str:
@@ -419,15 +412,20 @@ def upsert_repo_secret_state(secret_payload: dict[str, Any]) -> None:
 def set_node_workspace_state(node_name: str, payload: dict[str, Any]) -> None:
     state = load_github_state()
     state.setdefault("node_workspaces", {})[node_name] = payload
+    work_item_id = str(payload.get("work_item_id", "")).strip()
+    if work_item_id:
+        state.setdefault("workspaces_by_work_item", {})[work_item_id] = payload
     save_github_state(state)
 
-    workspaces = load_node_workspaces()
-    workspaces[node_name] = payload
-    save_node_workspaces(workspaces)
+    set_workspace_binding(
+        node_name=node_name,
+        payload=payload,
+        work_item_id=work_item_id,
+    )
 
 
-def workspace_for_node(node_name: str) -> dict[str, Any]:
-    return load_node_workspaces().get(node_name, {})
+def workspace_for_node(node_name: str, work_item_id: str = "") -> dict[str, Any]:
+    return workspace_binding_for(node_name=node_name, work_item_id=work_item_id)
 
 
 def cleanup_worktree_path(repo_root: Path, target_path: Path) -> None:
@@ -595,8 +593,10 @@ class GitHubCreateIssueInput(BaseModel):
     body: str = Field(..., description="Issue 正文。")
     labels: list[str] = Field(default_factory=list, description="Issue labels。")
     node_name: str = Field(default="", description="负责的 node。")
+    logical_node_id: str = Field(default="", description="逻辑 node id，例如 backend_node.catalog。")
     issue_key: str = Field(default="", description="内部 Issue ID，例如 MVP-001。")
     branch_name: str = Field(default="", description="建议绑定的分支名。")
+    work_item_id: str = Field(default="", description="work item id。")
 
 
 class GitHubCreateIssueTool(BaseTool):
@@ -612,8 +612,10 @@ class GitHubCreateIssueTool(BaseTool):
         body: str,
         labels: list[str] | None = None,
         node_name: str = "",
+        logical_node_id: str = "",
         issue_key: str = "",
         branch_name: str = "",
+        work_item_id: str = "",
     ) -> str:
         owner, repo = repo_state()
         payload = {
@@ -631,8 +633,10 @@ class GitHubCreateIssueTool(BaseTool):
             "title": response.get("title", title),
             "html_url": response.get("html_url", ""),
             "node": node_name,
+            "logical_node_id": logical_node_id,
             "issue_key": issue_key,
             "branch_name": branch_name,
+            "work_item_id": work_item_id or issue_key,
             "status": "open",
         }
         upsert_issue_state(issue_payload)
@@ -705,6 +709,8 @@ class GitHubSyncCICDSecretsTool(BaseTool):
 class GitPrepareWorkspaceInput(BaseModel):
     node_name: str = Field(..., description="节点名称，如 backend_node。")
     branch_name: str = Field(..., description="该 node 专属分支名。")
+    work_item_id: str = Field(default="", description="work item id。")
+    logical_node_id: str = Field(default="", description="逻辑 node id。")
     issue_number: int = Field(default=0, ge=0, description="关联的 GitHub issue 编号。")
     base_branch: str = Field(default="main", description="从哪个基础分支切出。")
     worktree_path: str = Field(default="", description="可选，显式指定 worktree 目录。")
@@ -722,6 +728,8 @@ class GitPrepareWorkspaceTool(BaseTool):
         self,
         node_name: str,
         branch_name: str,
+        work_item_id: str = "",
+        logical_node_id: str = "",
         issue_number: int = 0,
         base_branch: str = "main",
         worktree_path: str = "",
@@ -739,7 +747,9 @@ class GitPrepareWorkspaceTool(BaseTool):
             else (
                 worktrees_root()
                 / repo_slug
-                / f"{node_name}-{sanitized_branch_fragment(branch_name)}"
+                / (
+                    f"{node_name}-{sanitized_branch_fragment(work_item_id or logical_node_id or branch_name)}"
+                )
             ).resolve()
         )
 
@@ -757,6 +767,8 @@ class GitPrepareWorkspaceTool(BaseTool):
 
         payload = {
             "node_name": node_name,
+            "logical_node_id": logical_node_id,
+            "work_item_id": work_item_id,
             "branch_name": branch_name,
             "issue_number": issue_number,
             "base_branch": base_branch,
@@ -765,6 +777,8 @@ class GitPrepareWorkspaceTool(BaseTool):
         set_node_workspace_state(node_name, payload)
         return (
             f"Node workspace 已准备：{node_name}\n"
+            f"- work_item_id: {work_item_id or '未绑定'}\n"
+            f"- logical_node_id: {logical_node_id or '未指定'}\n"
             f"- branch: {branch_name}\n"
             f"- worktree: {target_path}\n"
             f"- issue_number: {issue_number or '未绑定'}"
@@ -774,6 +788,7 @@ class GitPrepareWorkspaceTool(BaseTool):
 class GitCommitAndPushInput(BaseModel):
     node_name: str = Field(..., description="节点名称。")
     commit_message: str = Field(..., description="提交信息。")
+    work_item_id: str = Field(default="", description="work item id。")
     branch_name: str = Field(default="", description="显式分支名；默认取 node workspace 记录。")
 
 
@@ -788,11 +803,15 @@ class GitCommitAndPushTool(BaseTool):
         self,
         node_name: str,
         commit_message: str,
+        work_item_id: str = "",
         branch_name: str = "",
     ) -> str:
-        workspace = workspace_for_node(node_name)
+        workspace = workspace_for_node(node_name, work_item_id=work_item_id)
         if not workspace:
-            raise RuntimeError(f"未找到 node workspace：{node_name}")
+            raise RuntimeError(
+                f"未找到 node workspace：{node_name}"
+                + (f" / {work_item_id}" if work_item_id else "")
+            )
 
         repo_root = Path(workspace["worktree_path"]).resolve()
         resolved_branch = branch_name or str(workspace.get("branch_name", "")).strip()
@@ -809,12 +828,17 @@ class GitCommitAndPushTool(BaseTool):
         state = load_github_state()
         issues = state.setdefault("issues", [])
         for issue in issues:
-            if issue.get("node") == node_name:
-                issue["status"] = "in_review"
+            if work_item_id:
+                if str(issue.get("work_item_id", "")).strip() != work_item_id:
+                    continue
+            elif issue.get("node") != node_name:
+                continue
+            issue["status"] = "in_review"
         save_github_state(state)
 
         return (
             f"{node_name} 已提交并推送。\n"
+            f"- work_item_id: {work_item_id or str(workspace.get('work_item_id', '')).strip() or '未绑定'}\n"
             f"- branch: {resolved_branch}\n"
             f"- commit: {detail}"
         )
@@ -822,6 +846,8 @@ class GitCommitAndPushTool(BaseTool):
 
 class GitHubCreateOrUpdatePRInput(BaseModel):
     node_name: str = Field(..., description="节点名称。")
+    logical_node_id: str = Field(default="", description="逻辑 node id。")
+    work_item_id: str = Field(default="", description="work item id。")
     title: str = Field(..., description="PR 标题。")
     body: str = Field(..., description="PR 正文。")
     head_branch: str = Field(..., description="head branch。")
@@ -846,6 +872,8 @@ class GitHubCreateOrUpdatePRTool(BaseTool):
         base_branch: str = "main",
         issue_number: int = 0,
         draft: bool = False,
+        logical_node_id: str = "",
+        work_item_id: str = "",
     ) -> str:
         owner, repo = repo_state()
         query = urllib.parse.urlencode(
@@ -888,6 +916,8 @@ class GitHubCreateOrUpdatePRTool(BaseTool):
             "title": pr.get("title", title),
             "html_url": pr.get("html_url", ""),
             "node": node_name,
+            "logical_node_id": logical_node_id,
+            "work_item_id": work_item_id,
             "head_branch": head_branch,
             "base_branch": base_branch,
             "issue_number": issue_number,
@@ -895,18 +925,24 @@ class GitHubCreateOrUpdatePRTool(BaseTool):
         }
         upsert_pr_state(pr_payload)
 
-        if issue_number:
+        if issue_number or work_item_id:
             state = load_github_state()
             for issue in state.setdefault("issues", []):
-                if issue.get("number") == issue_number:
-                    issue["pr_number"] = pr_payload["number"]
-                    issue["status"] = "in_review"
+                if issue_number and issue.get("number") != issue_number:
+                    continue
+                if work_item_id and str(issue.get("work_item_id", "")).strip() != work_item_id:
+                    continue
+                issue["status"] = "in_review"
+                issue["pr_number"] = pr_payload["number"]
+                issue["status"] = "in_review"
             save_github_state(state)
 
         return (
             f"PR 已就绪：#{pr_payload['number']} {pr_payload['title']}\n"
             f"- url: {pr_payload['html_url']}\n"
             f"- node: {node_name}\n"
+            f"- logical_node_id: {logical_node_id or '未指定'}\n"
+            f"- work_item_id: {work_item_id or '未绑定'}\n"
             f"- head: {head_branch}\n"
             f"- base: {base_branch}"
         )

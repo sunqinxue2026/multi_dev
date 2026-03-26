@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 
 from multi_dev.crew import MultiDev
+from multi_dev.services import sync_dispatch_runtime_state
+from multi_dev.tools.runtime_registry import base_node_name
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
@@ -121,6 +123,10 @@ ARTIFACT_PATHS = [
     "outputs/execution_log.jsonl",
     "outputs/github_state.json",
     "outputs/node_workspaces.json",
+    "outputs/dispatch_rounds.json",
+    "outputs/work_items.json",
+    "outputs/pr_bindings.json",
+    "outputs/ownership_rules.json",
     "outputs/github_automation.md",
     "outputs/reviewer_audit.md",
     "outputs/master_decision.md",
@@ -179,6 +185,9 @@ def clean_previous_artifacts() -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             path.unlink()
+    lane_root = outputs_root() / "node_lanes"
+    if lane_root.exists():
+        shutil.rmtree(lane_root)
     if rounds_root().exists():
         shutil.rmtree(rounds_root())
         rounds_root().mkdir(parents=True, exist_ok=True)
@@ -516,6 +525,13 @@ def archive_round_artifacts(round_index: int) -> None:
     for path in artifact_paths():
         if path.exists():
             shutil.copy2(path, round_dir / path.name)
+    lane_root = outputs_root() / "node_lanes"
+    if lane_root.exists():
+        shutil.copytree(
+            lane_root,
+            round_dir / "node_lanes",
+            dirs_exist_ok=True,
+        )
 
 
 def execution_log_entries() -> list[dict[str, object]]:
@@ -572,7 +588,7 @@ def nodes_with_real_writes(entries: list[dict[str, object]]) -> set[str]:
         details = entry.get("details", {})
         if not isinstance(details, dict):
             continue
-        node = str(details.get("node", "")).strip()
+        node = base_node_name(str(details.get("node", "")).strip())
         if node:
             nodes.add(node)
     return nodes
@@ -620,11 +636,33 @@ def write_entries_by_node(
         details = entry.get("details", {})
         if not isinstance(details, dict):
             continue
-        node = str(details.get("node", "")).strip()
+        node = base_node_name(str(details.get("node", "")).strip())
         if not node:
             continue
         grouped.setdefault(node, []).append(entry)
     return grouped
+
+
+def aggregate_node_lane_outputs() -> None:
+    outputs = outputs_root()
+    lane_root = outputs / "node_lanes"
+    if not lane_root.exists():
+        return
+
+    for base_node in ("backend_node", "frontend_node", "tester_node"):
+        segments: list[str] = []
+        for lane_file in sorted(lane_root.glob(f"{base_node}*.md")):
+            body = lane_file.read_text(encoding="utf-8", errors="ignore").strip()
+            if not body:
+                continue
+            segments.append(f"## {lane_file.stem}\n\n{body}")
+
+        target_path = outputs / f"{base_node}.md"
+        if segments:
+            target_path.write_text(
+                "# 聚合节点输出\n\n" + "\n\n".join(segments) + "\n",
+                encoding="utf-8",
+            )
 
 
 def path_authorized_for_targets(
@@ -1118,13 +1156,12 @@ def run_round_loop(base_inputs: dict[str, str]) -> None:
         current_inputs["round_index"] = str(round_index)
         print(f"\n===== Round {round_index}/{max_rounds()} =====")
         kickoff_round(current_inputs)
+        aggregate_node_lane_outputs()
         enforce_bootstrap_write_progress(round_index=round_index, inputs=current_inputs)
         stabilize_bootstrap_fast_track_outputs(
             round_index=round_index,
             inputs=current_inputs,
         )
-        archive_round_artifacts(round_index)
-
         decision_contract = load_json_contract(output_path("outputs/master_decision.md"))
         reviewer_contract: dict[str, object] | None = None
         reviewer_path = output_path("outputs/reviewer_audit.md")
@@ -1132,6 +1169,15 @@ def run_round_loop(base_inputs: dict[str, str]) -> None:
             reviewer_contract = extract_json_block(
                 reviewer_path.read_text(encoding="utf-8", errors="ignore")
             )
+        sync_dispatch_runtime_state(
+            round_index=round_index,
+            inputs=current_inputs,
+            dispatch_contract=dispatch_contract_or_none(),
+            reviewer_contract=reviewer_contract,
+            decision_contract=decision_contract,
+            execution_entries=execution_log_entries(),
+        )
+        archive_round_artifacts(round_index)
 
         decision = str(decision_contract.get("decision", "")).upper()
         rerun_nodes = decision_contract.get("rerun_nodes", [])

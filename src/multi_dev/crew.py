@@ -1,8 +1,11 @@
+import json
 import os
+import re
 
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from crewai.project import CrewBase, agent, crew, task
+from multi_dev.tools.runtime_registry import extract_json_block
 from multi_dev.tools import (
     ScaffoldThinCICDWorkflowsTool,
     GitBranchDiffSummaryTool,
@@ -22,6 +25,89 @@ from multi_dev.tools import (
     ReplaceRepoTextTool,
     WriteRepoFileTool,
 )
+
+
+def pool_size_for_node(base_node_name: str) -> int:
+    env_map = {
+        "backend_node": "CREW_BACKEND_POOL_SIZE",
+        "frontend_node": "CREW_FRONTEND_POOL_SIZE",
+        "tester_node": "CREW_TESTER_POOL_SIZE",
+    }
+    raw_value = os.getenv(env_map.get(base_node_name, ""), "").strip()
+    if not raw_value:
+        raw_value = os.getenv("CREW_NODE_POOL_SIZE", "").strip()
+    if not raw_value:
+        raw_value = "2"
+    try:
+        value = int(raw_value)
+    except ValueError:
+        value = 2
+    return max(1, min(value, 6))
+
+
+def lane_name_for_node(base_node_name: str, lane_index: int) -> str:
+    if pool_size_for_node(base_node_name) <= 1:
+        return base_node_name
+    return f"{base_node_name}__{lane_index}"
+
+
+def normalize_master_dispatch_artifact_callback(*_args, **_kwargs) -> None:
+    dispatch_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        "outputs",
+        "master_dispatch.md",
+    )
+    if not os.path.exists(dispatch_path):
+        return
+
+    content = open(dispatch_path, encoding="utf-8", errors="ignore").read()
+    contract = extract_json_block(content)
+    if not isinstance(contract, dict):
+        return
+
+    work_items = contract.get("work_items", [])
+    if not isinstance(work_items, list):
+        return
+
+    lane_counters: dict[str, int] = {}
+    active_nodes: list[str] = []
+    for item in work_items:
+        if not isinstance(item, dict):
+            continue
+        node = str(item.get("node", "")).strip()
+        if not node:
+            continue
+        if node not in active_nodes:
+            active_nodes.append(node)
+        worker_lane = str(item.get("worker_lane", "")).strip()
+        if not worker_lane:
+            lane_counters[node] = lane_counters.get(node, 0) + 1
+            lane_index = ((lane_counters[node] - 1) % pool_size_for_node(node)) + 1
+            worker_lane = lane_name_for_node(node, lane_index)
+            item["worker_lane"] = worker_lane
+        if not str(item.get("logical_node_id", "")).strip():
+            item["logical_node_id"] = worker_lane
+
+    if active_nodes and not contract.get("active_nodes"):
+        contract["active_nodes"] = active_nodes
+    if "inactive_nodes" not in contract:
+        contract["inactive_nodes"] = [
+            node_name
+            for node_name in ("backend_node", "frontend_node", "tester_node")
+            if node_name not in active_nodes
+        ]
+    if not str(contract.get("user_interface", "")).strip():
+        contract["user_interface"] = "master_only"
+
+    replacement = "```json\n" + json.dumps(contract, ensure_ascii=False, indent=2) + "\n```"
+    pattern = r"```(?:json|JSON)\s*(\{.*?\})\s*```"
+    matches = list(re.finditer(pattern, content, flags=re.DOTALL))
+    if not matches:
+        return
+    last_match = matches[-1]
+    updated = content[: last_match.start()] + replacement + content[last_match.end() :]
+    with open(dispatch_path, "w", encoding="utf-8") as file_handle:
+        file_handle.write(updated)
 
 
 @CrewBase
@@ -88,6 +174,101 @@ class MultiDev:
             for item in raw_value.split(",")
             if item.strip()
         )
+
+    def node_pool_size(self, base_node_name: str) -> int:
+        return pool_size_for_node(base_node_name)
+
+    def parallel_node_execution_enabled(self) -> bool:
+        return any(
+            self.node_pool_size(base_node_name) > 1
+            for base_node_name in ("backend_node", "frontend_node", "tester_node")
+        )
+
+    def lane_node_name(self, base_node_name: str, lane_index: int) -> str:
+        return lane_name_for_node(base_node_name, lane_index)
+
+    def lane_output_path(self, base_node_name: str, lane_index: int) -> str:
+        lane_node_name = self.lane_node_name(base_node_name, lane_index)
+        if lane_node_name == base_node_name:
+            return f"outputs/{base_node_name}.md"
+        return f"outputs/node_lanes/{lane_node_name}.md"
+
+    def configured_task(
+        self,
+        task_key: str,
+        *,
+        agent_instance: Agent,
+        context: list[Task] | None = None,
+        output_file: str | None = None,
+        name: str | None = None,
+        async_execution: bool = False,
+        description_suffix: str = "",
+        callback=None,
+    ) -> Task:
+        config = dict(self.tasks_config[task_key])  # type: ignore[index]
+        if description_suffix:
+            description = str(config.get("description", "")).rstrip()
+            config["description"] = f"{description}\n\n{description_suffix}".strip()
+        if output_file:
+            config["output_file"] = output_file
+        return Task(
+            name=name,
+            config=config,
+            agent=agent_instance,
+            context=context or [],
+            markdown=True,
+            async_execution=async_execution,
+            callback=callback,
+        )
+
+    def build_execution_agent(
+        self,
+        *,
+        config_key: str,
+        base_node_name: str,
+        lane_index: int,
+        allowed_prefixes: tuple[str, ...],
+    ) -> Agent:
+        lane_node_name = self.lane_node_name(base_node_name, lane_index)
+        config = dict(self.agents_config[config_key])  # type: ignore[index]
+        role = str(config.get("role", "")).strip()
+        if lane_node_name != base_node_name:
+            config["role"] = f"{role}（{lane_node_name}）"
+        return Agent(
+            config=config,
+            llm=self.shared_llm(),
+            tools=self.execution_tools(
+                allowed_prefixes=allowed_prefixes,
+                node_name=lane_node_name,
+            ),
+            verbose=True,
+            allow_delegation=False,
+        )
+
+    def build_execution_lane_specs(self) -> list[dict[str, object]]:
+        specs: list[dict[str, object]] = []
+        node_definitions = [
+            ("backend_node", "backend_node", "backend_node_task", "CREW_BACKEND_PATHS"),
+            ("frontend_node", "frontend_node", "frontend_node_task", "CREW_FRONTEND_PATHS"),
+            ("tester_node", "tester_node", "tester_node_task", "CREW_TEST_PATHS"),
+        ]
+        for base_node_name, config_key, task_key, env_name in node_definitions:
+            allowed_prefixes = self.node_allowed_prefixes(env_name)
+            pool_size = self.node_pool_size(base_node_name)
+            for lane_index in range(1, pool_size + 1):
+                lane_node_name = self.lane_node_name(base_node_name, lane_index)
+                specs.append(
+                    {
+                        "base_node_name": base_node_name,
+                        "config_key": config_key,
+                        "task_key": task_key,
+                        "lane_index": lane_index,
+                        "lane_node_name": lane_node_name,
+                        "output_file": self.lane_output_path(base_node_name, lane_index),
+                        "allowed_prefixes": allowed_prefixes,
+                    }
+                )
+        return specs
 
     def read_tools(
         self,
@@ -491,21 +672,208 @@ class MultiDev:
         run_mode = self.run_mode()
         process = Process.sequential if run_mode == "fast" else Process.hierarchical
         manager_agent = None if run_mode == "fast" else self.master_manager()
-        tasks = self.tasks
+
+        master_controller = self.master_controller()
+        repo_analyst = self.repo_analyst()
+        task_planner = self.task_planner()
+        issue_writer = self.issue_writer()
+        developer_worker = self.developer_worker()
+        reviewer_worker = self.reviewer_worker()
+
+        repo_analysis_task = self.configured_task(
+            "repo_analysis_task",
+            agent_instance=repo_analyst,
+            name="repo_analysis_task",
+        )
+        module_boundary_task = self.configured_task(
+            "module_boundary_task",
+            agent_instance=task_planner,
+            context=[repo_analysis_task],
+            name="module_boundary_task",
+        )
+        issue_drafting_task = self.configured_task(
+            "issue_drafting_task",
+            agent_instance=issue_writer,
+            context=[repo_analysis_task, module_boundary_task],
+            name="issue_drafting_task",
+        )
+        workspace_plan_task = self.configured_task(
+            "workspace_plan_task",
+            agent_instance=task_planner,
+            context=[repo_analysis_task, module_boundary_task, issue_drafting_task],
+            name="workspace_plan_task",
+        )
+
+        master_intake_context: list[Task] = []
+        if not self.bootstrap_fast_track_enabled():
+            master_intake_context = [repo_analysis_task, module_boundary_task]
+        master_intake_task = self.configured_task(
+            "master_intake_task",
+            agent_instance=master_controller,
+            context=master_intake_context,
+            name="master_intake_task",
+        )
+
+        master_dispatch_context = [master_intake_task]
+        if not self.bootstrap_fast_track_enabled():
+            master_dispatch_context.extend([issue_drafting_task, workspace_plan_task])
+        master_dispatch_task = self.configured_task(
+            "master_dispatch_task",
+            agent_instance=master_controller,
+            context=master_dispatch_context,
+            name="master_dispatch_task",
+            callback=normalize_master_dispatch_artifact_callback,
+        )
+
+        lane_specs = self.build_execution_lane_specs()
+        execution_lane_agents: list[Agent] = []
+        backend_tasks: list[Task] = []
+        frontend_tasks: list[Task] = []
+        tester_tasks: list[Task] = []
+        async_lanes = self.parallel_node_execution_enabled()
+
+        for spec in lane_specs:
+            base_node_name = str(spec["base_node_name"])
+            lane_index = int(spec["lane_index"])
+            lane_node_name = str(spec["lane_node_name"])
+            task_key = str(spec["task_key"])
+            config_key = str(spec["config_key"])
+            output_file = str(spec["output_file"])
+            allowed_prefixes = tuple(spec["allowed_prefixes"])
+            lane_agent = self.build_execution_agent(
+                config_key=config_key,
+                base_node_name=base_node_name,
+                lane_index=lane_index,
+                allowed_prefixes=allowed_prefixes,
+            )
+            execution_lane_agents.append(lane_agent)
+            context = [master_dispatch_task]
+            if base_node_name == "tester_node" and not self.bootstrap_fast_track_enabled():
+                context = [master_dispatch_task, *backend_tasks, *frontend_tasks]
+            lane_description = (
+                f"当前执行 lane 标识：`{lane_node_name}`。\n"
+                f"- 你只处理 `dispatch_contract.work_items` 中 `node=\"{base_node_name}\"`，且 `worker_lane=\"{lane_node_name}\"` 的项；"
+                "若当前 contract 未显式给出 `worker_lane`，仅 `__1` lane 可兜底接单，其余 lane 必须输出 `skipped`。\n"
+                f"- 所有 Git/GitHub 工具调用里的 `node_name` 参数必须使用 `{lane_node_name}`。\n"
+                "- 每个 work item 必须独立走完整链路：准备 worktree、真实写入、commit/push、创建或更新 PR；"
+                "不得把多个 work item 混到同一条 branch、同一个 worktree 或同一个 PR 中。"
+            )
+            lane_task = self.configured_task(
+                task_key,
+                agent_instance=lane_agent,
+                context=context,
+                output_file=output_file,
+                name=f"{lane_node_name}_task",
+                async_execution=(
+                    async_lanes
+                    and (
+                        base_node_name in {"backend_node", "frontend_node"}
+                        or self.bootstrap_fast_track_enabled()
+                    )
+                ),
+                description_suffix=lane_description,
+            )
+            if base_node_name == "backend_node":
+                backend_tasks.append(lane_task)
+            elif base_node_name == "frontend_node":
+                frontend_tasks.append(lane_task)
+            else:
+                tester_tasks.append(lane_task)
+
+        node_execution_tasks = [*backend_tasks, *frontend_tasks, *tester_tasks]
+
+        pr_drafting_task = self.configured_task(
+            "pr_drafting_task",
+            agent_instance=developer_worker,
+            context=[master_dispatch_task, *node_execution_tasks],
+            name="pr_drafting_task",
+        )
+        execution_summary_task = self.configured_task(
+            "execution_summary_task",
+            agent_instance=developer_worker,
+            context=node_execution_tasks,
+            name="execution_summary_task",
+        )
+        github_automation_task = self.configured_task(
+            "github_automation_task",
+            agent_instance=developer_worker,
+            context=[
+                master_dispatch_task,
+                *node_execution_tasks,
+                pr_drafting_task,
+                execution_summary_task,
+            ],
+            name="github_automation_task",
+        )
+
+        reviewer_context = [
+            master_intake_task,
+            master_dispatch_task,
+            *node_execution_tasks,
+            execution_summary_task,
+        ]
+        if not self.bootstrap_fast_track_enabled():
+            reviewer_context.extend([pr_drafting_task, github_automation_task])
+        reviewer_audit_task = self.configured_task(
+            "reviewer_audit_task",
+            agent_instance=reviewer_worker,
+            context=reviewer_context,
+            name="reviewer_audit_task",
+        )
+
+        master_decision_context = [
+            master_intake_task,
+            master_dispatch_task,
+            *node_execution_tasks,
+            execution_summary_task,
+            reviewer_audit_task,
+        ]
+        if not self.bootstrap_fast_track_enabled():
+            master_decision_context.extend([pr_drafting_task, github_automation_task])
+        master_decision_task = self.configured_task(
+            "master_decision_task",
+            agent_instance=master_controller,
+            context=master_decision_context,
+            name="master_decision_task",
+        )
+
         if self.bootstrap_fast_track_enabled():
             tasks = [
-                self.master_intake_task(),
-                self.master_dispatch_task(),
-                self.backend_node_task(),
-                self.frontend_node_task(),
-                self.tester_node_task(),
-                self.execution_summary_task(),
-                self.reviewer_audit_task(),
-                self.master_decision_task(),
+                master_intake_task,
+                master_dispatch_task,
+                *node_execution_tasks,
+                execution_summary_task,
+                reviewer_audit_task,
+                master_decision_task,
+            ]
+        else:
+            tasks = [
+                repo_analysis_task,
+                module_boundary_task,
+                issue_drafting_task,
+                workspace_plan_task,
+                master_intake_task,
+                master_dispatch_task,
+                *node_execution_tasks,
+                pr_drafting_task,
+                execution_summary_task,
+                github_automation_task,
+                reviewer_audit_task,
+                master_decision_task,
             ]
 
+        agents = [
+            master_controller,
+            repo_analyst,
+            task_planner,
+            issue_writer,
+            developer_worker,
+            reviewer_worker,
+            *execution_lane_agents,
+        ]
+
         return Crew(
-            agents=self.agents,
+            agents=agents,
             tasks=tasks,
             process=process,
             manager_agent=manager_agent,

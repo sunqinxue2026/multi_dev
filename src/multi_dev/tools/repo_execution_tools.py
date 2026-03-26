@@ -1,12 +1,18 @@
 import json
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Type
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
+
+from multi_dev.tools.runtime_registry import (
+    active_work_item_id_for_node,
+    approved_targets_for_node as approved_dispatch_targets_for_node,
+    base_node_name,
+    workspace_binding_for,
+)
 
 
 IGNORED_PARTS = {
@@ -72,24 +78,9 @@ def execution_log_path() -> Path:
     return outputs_dir() / "execution_log.jsonl"
 
 
-def node_workspaces_path() -> Path:
-    return outputs_dir() / "node_workspaces.json"
-
-
-def load_node_workspaces() -> dict[str, object]:
-    path = node_workspaces_path()
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def target_repository_root(node_name: str = "") -> Path:
     if node_name:
-        workspace = load_node_workspaces().get(node_name, {})
+        workspace = workspace_binding_for(node_name=node_name)
         if isinstance(workspace, dict):
             worktree_path = str(workspace.get("worktree_path", "")).strip()
             if worktree_path:
@@ -153,6 +144,15 @@ def should_ignore(relative_path: Path) -> bool:
 
 
 def append_execution_log(action: str, relative_path: str, details: dict[str, str]) -> None:
+    node_name = str(details.get("node", "")).strip()
+    if node_name:
+        workspace = workspace_binding_for(node_name=node_name)
+        work_item_id = str(workspace.get("work_item_id", "")).strip()
+        logical_node_id = str(workspace.get("logical_node_id", "")).strip()
+        if work_item_id and "work_item_id" not in details:
+            details["work_item_id"] = work_item_id
+        if logical_node_id and "logical_node_id" not in details:
+            details["logical_node_id"] = logical_node_id
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "action": action,
@@ -194,55 +194,14 @@ def path_matches_prefix(relative: Path, prefix: str) -> bool:
     )
 
 
-def extract_json_block(markdown_text: str) -> dict[str, object] | None:
-    patterns = [
-        r"```json\s*(\{.*?\})\s*```",
-        r"```JSON\s*(\{.*?\})\s*```",
-    ]
-    for pattern in patterns:
-        matches = re.findall(pattern, markdown_text, flags=re.DOTALL)
-        for candidate in reversed(matches):
-            try:
-                parsed = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict):
-                return parsed
-    return None
-
-
 def approved_targets_for_node(node_name: str) -> tuple[str, ...]:
     if not node_name:
         return ()
-
-    dispatch_path = outputs_dir() / "master_dispatch.md"
-    if not dispatch_path.exists():
-        return ()
-
-    contract = extract_json_block(
-        dispatch_path.read_text(encoding="utf-8", errors="ignore")
+    work_item_id = active_work_item_id_for_node(node_name)
+    targets = approved_dispatch_targets_for_node(
+        node_name,
+        work_item_id=work_item_id,
     )
-    if not contract:
-        return ()
-
-    work_items = contract.get("work_items", [])
-    if not isinstance(work_items, list):
-        return ()
-
-    approved_targets: list[str] = []
-    for item in work_items:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("node", "")).strip() != node_name:
-            continue
-
-        targets = item.get("targets", [])
-        if isinstance(targets, list):
-            for target in targets:
-                if isinstance(target, str) and target.strip():
-                    approved_targets.append(target.strip().strip("/"))
-
-    targets = tuple(dict.fromkeys(target for target in approved_targets if target))
     if not bootstrap_fast_track_enabled():
         return targets
 
@@ -251,6 +210,7 @@ def approved_targets_for_node(node_name: str) -> tuple[str, ...]:
 
 
 def bootstrap_template_targets_for_node(node_name: str) -> tuple[str, ...]:
+    resolved_node_name = base_node_name(node_name)
     package_name = bootstrap_package_name()
     shared_backend = (
         "pyproject.toml",
@@ -275,11 +235,11 @@ def bootstrap_template_targets_for_node(node_name: str) -> tuple[str, ...]:
         ".github/workflows/deploy.yml",
     )
 
-    if node_name == "backend_node":
+    if resolved_node_name == "backend_node":
         return shared_backend
-    if node_name == "frontend_node":
+    if resolved_node_name == "frontend_node":
         return shared_frontend
-    if node_name == "tester_node":
+    if resolved_node_name == "tester_node":
         return shared_tester
     return ()
 
