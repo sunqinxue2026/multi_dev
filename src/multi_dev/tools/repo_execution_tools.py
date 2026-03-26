@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Type
@@ -183,6 +184,21 @@ def normalize_prefixes(prefixes: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(cleaned)
 
 
+def expand_glob_patterns(glob_pattern: str) -> tuple[str, ...]:
+    pattern = str(glob_pattern).strip() or "**/*"
+    match = re.search(r"\{([^{}]+)\}", pattern)
+    if not match:
+        return (pattern,)
+
+    prefix = pattern[: match.start()]
+    suffix = pattern[match.end() :]
+    variants = [item.strip() for item in match.group(1).split(",") if item.strip()]
+    expanded: list[str] = []
+    for variant in variants:
+        expanded.extend(expand_glob_patterns(prefix + variant + suffix))
+    return tuple(dict.fromkeys(expanded))
+
+
 def path_matches_prefix(relative: Path, prefix: str) -> bool:
     normalized_prefix = prefix.strip().strip("/")
     if not normalized_prefix:
@@ -295,7 +311,18 @@ class ListRepoFilesTool(BaseTool):
         root = target_repository_root(node_name=self.node_name)
         matches: list[str] = []
 
-        for path in sorted(root.glob(glob_pattern)):
+        expanded_patterns = expand_glob_patterns(glob_pattern)
+        seen: set[str] = set()
+        all_paths: list[Path] = []
+        for pattern in expanded_patterns:
+            for path in root.glob(pattern):
+                marker = str(path)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                all_paths.append(path)
+
+        for path in sorted(all_paths):
             try:
                 relative = path.relative_to(root)
             except ValueError:
