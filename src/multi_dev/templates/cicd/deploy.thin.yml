@@ -1,0 +1,24 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: app-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    uses: __TEMPLATE_REPO__/.github/workflows/reusable_deploy.yml@__TEMPLATE_REF__
+    with:
+      python_version: "__PYTHON_VERSION__"
+      node_version: "__NODE_VERSION__"
+      backend_install_command: "__BACKEND_INSTALL_COMMAND__"
+      backend_verify_command: "__BACKEND_VERIFY_COMMAND__"
+      frontend_working_directory: "__FRONTEND_WORKDIR__"
+      frontend_install_command: "__FRONTEND_INSTALL_COMMAND__"
+      frontend_build_command: "__FRONTEND_BUILD_COMMAND__"
+      remote_deploy_command: "__REMOTE_DEPLOY_COMMAND__"
+    secrets: inherit

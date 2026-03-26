@@ -1,3 +1,4 @@
+from multi_dev.tools.cicd_template_tools import ScaffoldThinCICDWorkflowsTool
 from multi_dev.tools.git_github_tools import (
     GitBranchDiffSummaryTool,
     GitCommitAndPushTool,
@@ -20,6 +21,7 @@ from multi_dev.tools.repo_execution_tools import (
 )
 
 __all__ = [
+    "ScaffoldThinCICDWorkflowsTool",
     "GitBranchDiffSummaryTool",
     "GitCommitAndPushTool",
     "GitHubBootstrapRepoTool",

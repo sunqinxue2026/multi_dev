@@ -4,6 +4,7 @@ from crewai import Agent, Crew, LLM, Process, Task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from crewai.project import CrewBase, agent, crew, task
 from multi_dev.tools import (
+    ScaffoldThinCICDWorkflowsTool,
     GitBranchDiffSummaryTool,
     GitCommitAndPushTool,
     GitHubBootstrapRepoTool,
@@ -110,6 +111,7 @@ class MultiDev:
             *self.read_tools(),
             ReadGitHubStateTool(),
             GitBranchDiffSummaryTool(),
+            ScaffoldThinCICDWorkflowsTool(),
             GitHubBootstrapRepoTool(),
             GitHubCreateIssueTool(),
             GitHubReviewPRTool(),

@@ -84,6 +84,7 @@ The project now includes a first pass of **real Git/GitHub execution tools** for
 - `reviewer` / `master` can inspect branch diff summaries and the persisted GitHub state
 - `master` can submit native GitHub PR reviews (`COMMENT`, `APPROVE`, `REQUEST_CHANGES`)
 - `master` can merge a real PR when the final decision is `MERGE`
+- merged PR 对应的远端 branch 默认保留，便于用户查看 node 改动；只有明确要求时才删除
 
 Required environment variables:
 
@@ -114,6 +115,26 @@ The project now includes a first pass of **real GitHub Actions CI/CD integration
 - `node` can commit, push, and open PRs for CI/CD changes in its own branch + worktree
 - `reviewer` / `master` can verify whether workflow files and repo secrets were actually configured
 
+## Central CI/CD Templates
+
+`multi_dev` 现在也可以作为统一 CI/CD 模板中心：
+
+- 中心模板仓库提供 reusable workflows：
+  - `.github/workflows/reusable_ci.yml`
+  - `.github/workflows/reusable_deploy.yml`
+- 新项目仓库只需生成两个超薄 workflow 文件：
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/deploy.yml`
+- 这两个超薄文件统一 `uses:` 中心模板，项目侧只保留项目自己的命令参数
+
+建议配套环境变量：
+
+```bash
+CREW_CICD_TEMPLATE_REPO=your-owner/multi_dev
+CREW_CICD_TEMPLATE_REF=main
+```
+
+当 `CREW_CICD_TEMPLATE_REPO` 已明确时，优先生成超薄 workflow，而不是在每个项目里重复写整套 CI/CD。
 
 Recommended deployment environment variables:
 
