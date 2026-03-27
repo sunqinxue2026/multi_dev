@@ -39,6 +39,34 @@ DEFAULT_PROJECT_CONTEXT = (
 
 DEFAULT_OUTPUT_LANGUAGE = "简体中文"
 
+SNACK_APP_HINT_MARKER = "[零食APP优化补充要求]"
+SNACK_APP_AUTO_POOL_SIZES = {
+    "CREW_BACKEND_POOL_SIZE": "3",
+    "CREW_FRONTEND_POOL_SIZE": "3",
+    "CREW_TESTER_POOL_SIZE": "2",
+}
+SNACK_APP_REQUIREMENT_APPENDIX = """
+[零食APP优化补充要求]
+- 在任何 issue 拆分与 node 派发之前，必须先完成一份详细产品蓝图，优先考虑“更容易发现零食、更快完成下单、更愿意再次复购”。
+- 功能设计至少覆盖：首页导购、分类导航、搜索与筛选、商品详情、规格选择、组合购/凑单、优惠券与满减、购物车、结算、订单追踪、复购入口、会员积分、评价晒单、收藏与分享。
+- 商品信息设计必须体现零食场景特征，例如口味、规格、品牌、场景、健康标签、甜咸辣偏好、礼盒/囤货属性、新品与爆款标签。
+- 派单时优先把工作拆成可并行功能簇，例如：商品发现与导购、购物车与结算、营销与复购、测试与质量门禁。
+- 若 lane 足够，frontend 优先分拆首页/分类与购物车结算，backend 优先分拆商品目录与营销交易，tester 重点覆盖下单主链路与回归验收。
+""".strip()
+
+SNACK_APP_KEYWORDS = (
+    "零食",
+    "零食app",
+    "零食商城",
+    "零食店",
+    "休闲食品",
+    "食品电商",
+    "snack",
+    "snacks",
+    "snack app",
+    "snack shop",
+)
+
 
 def run_mode() -> str:
     value = os.getenv("CREW_RUN_MODE", "full").strip().lower()
@@ -48,6 +76,50 @@ def run_mode() -> str:
 def execution_mode() -> str:
     value = os.getenv("CREW_EXECUTION_MODE", "plan").strip().lower()
     return "write" if value == "write" else "plan"
+
+
+def requirement_matches_snack_app(requirement: str) -> bool:
+    normalized = requirement.strip().lower()
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in SNACK_APP_KEYWORDS)
+
+
+def enrich_product_requirement(requirement: str) -> str:
+    cleaned = requirement.strip()
+    if not cleaned:
+        return cleaned
+    if not requirement_matches_snack_app(cleaned):
+        return cleaned
+    if SNACK_APP_HINT_MARKER in cleaned:
+        return cleaned
+    return f"{cleaned}\n\n{SNACK_APP_REQUIREMENT_APPENDIX}"
+
+
+def auto_scale_lane_pool_sizes(product_requirement: str) -> dict[str, str]:
+    if not requirement_matches_snack_app(product_requirement):
+        return {}
+
+    applied: dict[str, str] = {}
+    for env_name, default_value in SNACK_APP_AUTO_POOL_SIZES.items():
+        if os.getenv(env_name, "").strip():
+            continue
+        os.environ[env_name] = default_value
+        applied[env_name] = default_value
+    return applied
+
+
+def resolved_pool_size(env_name: str) -> str:
+    raw_value = os.getenv(env_name, "").strip()
+    if not raw_value:
+        raw_value = os.getenv("CREW_NODE_POOL_SIZE", "").strip()
+    if not raw_value:
+        raw_value = "2"
+    try:
+        value = int(raw_value)
+    except ValueError:
+        value = 2
+    return str(max(1, min(value, 6)))
 
 
 IGNORED_NAMES = {
@@ -114,6 +186,7 @@ TEXTLIKE_SUFFIXES = {
 }
 ARTIFACT_PATHS = [
     "outputs/repo_analysis.md",
+    "outputs/product_blueprint.md",
     "outputs/module_boundaries.md",
     "outputs/issues.md",
     "outputs/workspace_plan.md",
@@ -339,6 +412,8 @@ def build_inputs() -> dict[str, str]:
         or os.getenv("PRODUCT_REQUIREMENT", "").strip()
         or DEFAULT_REQUIREMENT
     )
+    product_requirement = enrich_product_requirement(product_requirement)
+    auto_scaled_pools = auto_scale_lane_pool_sizes(product_requirement)
     project_context = os.getenv("PROJECT_CONTEXT", "").strip() or DEFAULT_PROJECT_CONTEXT
     output_language = os.getenv("OUTPUT_LANGUAGE", "").strip() or DEFAULT_OUTPUT_LANGUAGE
 
@@ -424,6 +499,13 @@ def build_inputs() -> dict[str, str]:
         "bootstrap_mode": bootstrap_mode,
         "bootstrap_fast_track": bootstrap_fast_track,
         "bootstrap_package_name": bootstrap_package_name,
+        "backend_pool_size": resolved_pool_size("CREW_BACKEND_POOL_SIZE"),
+        "frontend_pool_size": resolved_pool_size("CREW_FRONTEND_POOL_SIZE"),
+        "tester_pool_size": resolved_pool_size("CREW_TESTER_POOL_SIZE"),
+        "auto_scaled_pools": ",".join(
+            f"{env_name}={value}" for env_name, value in sorted(auto_scaled_pools.items())
+        )
+        or "none",
         "github_enabled": github_enabled,
         "github_owner": github_owner or "未设置",
         "github_repo": github_repo,

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>零食快选</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Snack Fast Lane</p>
+          <h1>零食快选</h1>
+          <p class="subcopy">按口味、场景、预算快速凑单，下单前自动帮你算优惠、免邮和积分。</p>
+        </div>
+        <button id="reloadButton" class="ghost-button">刷新推荐</button>
+      </header>
+
+      <section class="hero-card" id="heroCard"></section>
+
+      <section class="filter-panel">
+        <div class="filter-row">
+          <label>
+            搜索
+            <input id="queryInput" type="text" placeholder="搜索品牌、口味、零食名" />
+          </label>
+          <label>
+            分类
+            <select id="categorySelect">
+              <option value="">全部分类</option>
+              <option value="脆片">脆片</option>
+              <option value="坚果">坚果</option>
+              <option value="果干">果干</option>
+              <option value="辣味">辣味</option>
+              <option value="饼干">饼干</option>
+              <option value="米饼">米饼</option>
+              <option value="饮品">饮品</option>
+            </select>
+          </label>
+          <label>
+            场景
+            <select id="sceneSelect">
+              <option value="">全部场景</option>
+              <option value="办公室解馋">办公室解馋</option>
+              <option value="健身加餐">健身加餐</option>
+              <option value="追剧分享">追剧分享</option>
+              <option value="夜宵放松">夜宵放松</option>
+              <option value="送礼囤货">送礼囤货</option>
+              <option value="家庭囤货">家庭囤货</option>
+              <option value="凑单免邮">凑单免邮</option>
+              <option value="下午茶搭配">下午茶搭配</option>
+            </select>
+          </label>
+          <label>
+            排序
+            <select id="sortSelect">
+              <option value="smart">智能推荐</option>
+              <option value="rating">评分优先</option>
+              <option value="price">价格优先</option>
+            </select>
+          </label>
+        </div>
+        <div class="filter-row compact">
+          <label>
+            最高价
+            <input id="maxPriceInput" type="range" min="8" max="30" step="1" value="30" />
+            <span id="maxPriceValue">30 元</span>
+          </label>
+          <label class="toggle">
+            <input id="healthyOnlyInput" type="checkbox" />
+            只看轻负担/高蛋白
+          </label>
+        </div>
+      </section>
+
+      <main class="content-grid">
+        <section>
+          <div class="section-heading">
+            <h2>爆款与高转化零食</h2>
+            <p>每张商品卡都给出场景、优惠和搭配建议，帮助用户更快决策。</p>
+          </div>
+          <div id="productGrid" class="product-grid"></div>
+        </section>
+
+        <aside class="cart-panel">
+          <div class="cart-header">
+            <h2>购物车</h2>
+            <span id="cartCount">0 件</span>
+          </div>
+          <div id="couponStrip" class="coupon-strip"></div>
+          <div id="cartItems" class="cart-items empty-state">先把喜欢的零食加入购物车吧。</div>
+          <div id="cartSummary" class="cart-summary"></div>
+          <div class="recommend-section">
+            <h3>顺手凑单推荐</h3>
+            <div id="recommendations" class="recommend-list"></div>
+          </div>
+        </aside>
+      </main>
+    </div>
+    <script src="./app.js" defer></script>
+  </body>
+</html>

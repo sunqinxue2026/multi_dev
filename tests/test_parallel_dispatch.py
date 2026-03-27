@@ -1,7 +1,15 @@
+import os
 import unittest
+from unittest import mock
 
-from multi_dev.crew import default_worktree_path_for, normalize_worker_lane_name
-from multi_dev.main import review_body_for_pr, should_skip_review
+from multi_dev.crew import MultiDev, default_worktree_path_for, normalize_worker_lane_name
+from multi_dev.main import (
+    auto_scale_lane_pool_sizes,
+    enrich_product_requirement,
+    requirement_matches_snack_app,
+    review_body_for_pr,
+    should_skip_review,
+)
 from multi_dev.tools.runtime_registry import worker_lane_aliases_for_node_name
 
 
@@ -57,6 +65,58 @@ class ParallelDispatchTests(unittest.TestCase):
         ]
         self.assertTrue(should_skip_review(reviews=reviews, pr_number=41, event="COMMENT"))
         self.assertFalse(should_skip_review(reviews=reviews, pr_number=41, event="REQUEST_CHANGES"))
+
+    def test_requirement_matches_snack_app(self) -> None:
+        self.assertTrue(requirement_matches_snack_app("请设计并优化一个零食APP"))
+        self.assertFalse(requirement_matches_snack_app("请优化日志采集系统"))
+
+    def test_enrich_product_requirement_adds_snack_appendix(self) -> None:
+        enriched = enrich_product_requirement("请详细设计零食APP功能")
+        self.assertIn("[零食APP优化补充要求]", enriched)
+        self.assertIn("购物车", enriched)
+        self.assertIn("会员积分", enriched)
+
+    @mock.patch.dict(os.environ, {}, clear=True)
+    def test_auto_scale_lane_pool_sizes_for_snack_app(self) -> None:
+        applied = auto_scale_lane_pool_sizes("请先详细设计零食APP功能")
+        self.assertEqual(os.environ["CREW_BACKEND_POOL_SIZE"], "3")
+        self.assertEqual(os.environ["CREW_FRONTEND_POOL_SIZE"], "3")
+        self.assertEqual(os.environ["CREW_TESTER_POOL_SIZE"], "2")
+        self.assertEqual(
+            applied,
+            {
+                "CREW_BACKEND_POOL_SIZE": "3",
+                "CREW_FRONTEND_POOL_SIZE": "3",
+                "CREW_TESTER_POOL_SIZE": "2",
+            },
+        )
+
+    @mock.patch.dict(os.environ, {"CREW_FRONTEND_POOL_SIZE": "5"}, clear=True)
+    def test_auto_scale_lane_pool_sizes_keeps_explicit_values(self) -> None:
+        applied = auto_scale_lane_pool_sizes("snack app checkout redesign")
+        self.assertEqual(os.environ["CREW_FRONTEND_POOL_SIZE"], "5")
+        self.assertEqual(os.environ["CREW_BACKEND_POOL_SIZE"], "3")
+        self.assertEqual(os.environ["CREW_TESTER_POOL_SIZE"], "2")
+        self.assertNotIn("CREW_FRONTEND_POOL_SIZE", applied)
+
+    @mock.patch.dict(os.environ, {}, clear=True)
+    def test_shared_llm_requires_key_or_base_url(self) -> None:
+        with self.assertRaises(ValueError):
+            MultiDev().shared_llm()
+
+    @mock.patch.dict(
+        os.environ,
+        {
+            "OPENAI_BASE_URL": "https://ollama-api.office.ihousejapan.cn/v1",
+            "OPENAI_MODEL_NAME": "qwen2.5:7b",
+        },
+        clear=True,
+    )
+    def test_shared_llm_accepts_openai_compatible_ollama_endpoint(self) -> None:
+        llm = MultiDev().shared_llm()
+        self.assertEqual(llm.base_url, "https://ollama-api.office.ihousejapan.cn/v1")
+        self.assertEqual(llm.model, "qwen2.5:7b")
+        self.assertEqual(llm.api_key, "ollama")
 
 
 if __name__ == "__main__":

@@ -47,6 +47,51 @@ repo_analysis_task:
     一份 Markdown 分析，包含：产品目的、核心模块、架构信号、约束条件、建议挂载点。必须明确区分“已观察事实”和“需确认假设”，且每条“已观察事实”都要包含证据标签。
   output_file: outputs/repo_analysis.md
 
+product_design_task:
+  description: >
+    在正式拆 issue、派发 node 和安排 workspace 之前，先把产品层设计做扎实，尤其要把“怎样让用户更顺手地买零食”讲清楚。
+
+    产品需求：
+    {product_requirement}
+
+    项目上下文：
+    {project_context}
+
+    目标仓库根目录：
+    {repository_root}
+
+    仓库快照：
+    {repository_snapshot}
+
+    输出语言：
+    {output_language}
+
+    可用 lane 容量：
+    - backend: {backend_pool_size}
+    - frontend: {frontend_pool_size}
+    - tester: {tester_pool_size}
+
+    规则：
+    - 先做产品设计，再谈 issue 派发；不要直接跳到工程实现。
+    - 若需求明显属于零售、电商、零食、礼盒、快消、订阅补货等购物场景，必须重点优化“发现商品 -> 选择规格 -> 凑单/领券 -> 下单 -> 履约追踪 -> 复购”全链路。
+    - 输出必须覆盖：目标用户、核心购物场景、信息架构、首页与搜索、商品详情、购物车、结算、优惠活动、订单与售后、复购机制、会员/积分、评价与内容种草。
+    - 必须区分 `当前仓库已具备的能力`、`本轮建议新增的能力`、`后续迭代能力`；不要把产品设计直接写成“仓库已经实现”。
+    - 若仓库快照里没有现成前端、后端或测试资产，这不影响你做产品设计，但你必须把相关功能标记为 `建议新增`，不能写成现状。
+    - 每个功能设计都要回答三个问题：用户为什么需要、对购买转化有什么帮助、最小可交付形态是什么。
+    - 必须输出一个“优先级分层”，至少区分：`P0 转化主链路`、`P1 复购与运营提效`、`P2 品牌体验增强`。
+    - 若 lane 数量大于 1，请额外给出适合并行派发的功能簇，例如 `商品发现`、`购物车与结算`、`营销与复购`、`质量验证`。
+    - 设计描述要具体，但不要直接写代码、接口 schema 或虚构现有文件名。
+
+    请产出：
+    1. 产品定位与用户画像，
+    2. 关键购买链路设计，
+    3. 核心功能清单与优先级，
+    4. 零食商品信息与营销策略设计，
+    5. 适合 master 后续派发给 node 的功能簇建议。
+  expected_output: >
+    一份 Markdown 产品蓝图，包含：用户画像、关键购买链路、核心功能清单、优先级分层、并行功能簇建议。必须明确区分“当前仓库已具备”“建议新增”“后续迭代”。
+  output_file: outputs/product_blueprint.md
+
 module_boundary_task:
   description: >
     根据仓库分析结果，把需求翻译成模块边界与执行挂载方案，为后续 issue 和 node 分工提供依据。
@@ -114,7 +159,7 @@ issue_drafting_task:
     {github_owner}/{github_repo}
 
     规则：
-    - 产出 2 到 4 张 issue 草稿。
+    - 默认产出 2 到 4 张 issue 草稿；若需求明显属于零食/零售/电商且链路较长，可扩展到 5 到 6 张，但仍需保持原子性与可派发性。
     - 每张 issue 必须包含：`Issue ID`、标题、目标、范围内、范围外、相关模块、涉及文件、依赖、验收标准、建议 node 类型。
     - 涉及文件必须区分 `现有文件`、`拟新增文件`、`未发现需确认`。
     - `建议 node 类型` 只能从 `backend_node`、`frontend_node`、`tester_node` 中选择，不得自造新 node 名称。
@@ -146,9 +191,15 @@ workspace_plan_task:
     输出语言：
     {output_language}
 
+    可用 lane 容量：
+    - backend: {backend_pool_size}
+    - frontend: {frontend_pool_size}
+    - tester: {tester_pool_size}
+
     规则：
     - 明确 master、backend_node、frontend_node、tester_node 各自接手哪些 issue。
     - 为每个 node 给出建议 workspace 路径、分支命名、输入产物、输出产物和交接对象。
+    - 若 lane 数量大于 1，必须显式说明同类 node 如何拆 lane，例如哪个 lane 负责 `catalog`、哪个 lane 负责 `cart`、哪个 lane 负责 `promotion` 或 `qa`。
     - 当前阶段是“本地模拟编排”，不是已落地的 sandbox 或 GitHub Actions；必须明确写出这一点。
     - 若某类 node 在当前仓库不适用，也必须保留该节点并写明“不适用原因”。
     - 不得把未来自动创建分支、issue、PR 说成已经实现。
@@ -250,6 +301,11 @@ master_dispatch_task:
     GitHub owner / repo / base：
     {github_owner}/{github_repo}@{github_base_branch}
 
+    可用 lane 容量：
+    - backend: {backend_pool_size}
+    - frontend: {frontend_pool_size}
+    - tester: {tester_pool_size}
+
     当前轮次：
     {round_index}/{max_rounds}
 
@@ -287,6 +343,7 @@ master_dispatch_task:
     - 若 `cicd_enabled=true`，且用户本轮明确要求“CI/CD / 部署 / GitHub Actions / 自动发布”，你必须在派发前调用 `github_sync_cicd_secrets(...)`，把部署相关 secrets 真正写入当前 GitHub repo；不得只在文档里说“后续再配置”。
     - 在该模式下，你为每个被派发的 work item 都必须给出真实 `branch_name`，并建议唯一 `worktree_path`；这些值必须写入 `dispatch_contract.work_items`。
     - 在并行模式下，同一个 `node` 类型下允许出现多个逻辑执行单元；因此 `dispatch_contract.work_items` 中每一项都必须补充 `work_item_id` 与 `logical_node_id`。例如同为 `backend_node`，可以拆成 `backend_node.catalog`、`backend_node.order`。
+    - 若当前需求属于零食/零售/电商购买场景，且可用 lane 数量大于 1，应优先按购买链路拆分 work item，例如 `discovery`、`catalog`、`cart`、`checkout`、`promotion`、`qa`，避免所有能力堆给单一 node。
     - 在该模式下，`dispatch_contract.work_items` 中每一项除现有字段外，还必须补充：`work_item_id`、`logical_node_id`、`worker_lane`、`github_issue_number`、`branch_name`、`worktree_path`、`pr_title`、`depends_on`。
     - 在已有业务仓库场景下，若你已经通过工具看到了具体文件，`dispatch_contract.work_items[*].targets` 应尽量写成具体文件路径，而不是宽泛目录；同时可附加 `candidate_files` 供 node 直接读取，不得让 node 在现有仓库里凭空新建平行实现。
     - 若 `cicd_enabled=true` 且用户明确要求 CI/CD，本轮允许新增的中性 CI/CD 目标仅限：`.github/workflows/ci.yml`、`.github/workflows/deploy.yml`、`scripts/deploy.sh`。除非用户明确批准，否则不得擅自扩写为 Docker、Kubernetes、Terraform、Helm、ArgoCD 等额外体系。

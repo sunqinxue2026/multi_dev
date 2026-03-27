@@ -252,15 +252,57 @@ class MultiDev:
     agents: list[BaseAgent]
     tasks: list[Task]
 
+    def llm_base_url(self) -> str | None:
+        base_url = (
+            os.getenv("OPENAI_API_BASE")
+            or os.getenv("OPENAI_BASE_URL")
+            or os.getenv("OLLAMA_BASE_URL")
+            or os.getenv("OLLAMA_HOST")
+            or ""
+        ).strip()
+        if not base_url:
+            return None
+        if base_url.endswith("/"):
+            base_url = base_url.rstrip("/")
+        # Ollama native host is often exposed without the OpenAI-compatible `/v1` suffix.
+        if base_url.endswith(":11434") or base_url.endswith("/11434"):
+            base_url = f"{base_url}/v1"
+        return base_url
+
+    def llm_model_name(self) -> str:
+        if os.getenv("CREW_LLM_MODEL", "").strip():
+            return os.getenv("CREW_LLM_MODEL", "").strip()
+        if os.getenv("OPENAI_MODEL_NAME", "").strip():
+            return os.getenv("OPENAI_MODEL_NAME", "").strip()
+        if os.getenv("OLLAMA_MODEL", "").strip():
+            return os.getenv("OLLAMA_MODEL", "").strip()
+        return "qwen-plus"
+
+    def llm_api_key(self, *, base_url: str | None) -> str | None:
+        api_key = (
+            os.getenv("OPENAI_API_KEY")
+            or os.getenv("OLLAMA_API_KEY")
+            or ""
+        ).strip()
+        if api_key:
+            return api_key
+        if base_url:
+            # OpenAI-compatible Ollama gateways often ignore the bearer token,
+            # but some client stacks still require a non-empty placeholder.
+            return "ollama"
+        return None
+
     def shared_llm(self) -> LLM:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
+        base_url = self.llm_base_url()
+        api_key = self.llm_api_key(base_url=base_url)
+        if not api_key and not base_url:
             raise ValueError(
-                "OPENAI_API_KEY is required. Export it before running `crewai run`."
+                "Either OPENAI_API_KEY or an OpenAI-compatible base URL "
+                "(OPENAI_BASE_URL / OPENAI_API_BASE / OLLAMA_BASE_URL / OLLAMA_HOST) "
+                "is required before running `crewai run`."
             )
 
-        model_name = os.getenv("OPENAI_MODEL_NAME", "qwen-plus")
-        base_url = os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_BASE_URL")
+        model_name = self.llm_model_name()
         if self.run_mode() == "fast":
             default_max_tokens = (
                 "2200"
@@ -519,6 +561,16 @@ class MultiDev:
         )
 
     @agent
+    def product_designer(self) -> Agent:
+        return Agent(
+            config=self.agents_config["product_designer"],  # type: ignore[index]
+            llm=self.shared_llm(),
+            tools=self.read_tools(),
+            verbose=True,
+            allow_delegation=False,
+        )
+
+    @agent
     def task_planner(self) -> Agent:
         return Agent(
             config=self.agents_config["task_planner"],  # type: ignore[index]
@@ -613,11 +665,20 @@ class MultiDev:
         )
 
     @task
+    def product_design_task(self) -> Task:
+        return Task(
+            config=self.tasks_config["product_design_task"],  # type: ignore[index]
+            agent=self.product_designer(),
+            context=[self.repo_analysis_task()],
+            markdown=True,
+        )
+
+    @task
     def module_boundary_task(self) -> Task:
         return Task(
             config=self.tasks_config["module_boundary_task"],  # type: ignore[index]
             agent=self.task_planner(),
-            context=[self.repo_analysis_task()],
+            context=[self.repo_analysis_task(), self.product_design_task()],
             markdown=True,
         )
 
@@ -626,7 +687,11 @@ class MultiDev:
         return Task(
             config=self.tasks_config["issue_drafting_task"],  # type: ignore[index]
             agent=self.issue_writer(),
-            context=[self.repo_analysis_task(), self.module_boundary_task()],
+            context=[
+                self.repo_analysis_task(),
+                self.product_design_task(),
+                self.module_boundary_task(),
+            ],
             markdown=True,
         )
 
@@ -637,6 +702,7 @@ class MultiDev:
             agent=self.task_planner(),
             context=[
                 self.repo_analysis_task(),
+                self.product_design_task(),
                 self.module_boundary_task(),
                 self.issue_drafting_task(),
             ],
@@ -645,10 +711,11 @@ class MultiDev:
 
     @task
     def master_intake_task(self) -> Task:
-        context = []
+        context = [self.product_design_task()]
         if not self.bootstrap_fast_track_enabled():
             context = [
                 self.repo_analysis_task(),
+                self.product_design_task(),
                 self.module_boundary_task(),
             ]
         return Task(
@@ -660,7 +727,7 @@ class MultiDev:
 
     @task
     def master_dispatch_task(self) -> Task:
-        context = [self.master_intake_task()]
+        context = [self.master_intake_task(), self.product_design_task()]
         if not self.bootstrap_fast_track_enabled():
             context.extend(
                 [
@@ -816,6 +883,7 @@ class MultiDev:
 
         master_controller = self.master_controller()
         repo_analyst = self.repo_analyst()
+        product_designer = self.product_designer()
         task_planner = self.task_planner()
         issue_writer = self.issue_writer()
         developer_worker = self.developer_worker()
@@ -826,28 +894,39 @@ class MultiDev:
             agent_instance=repo_analyst,
             name="repo_analysis_task",
         )
+        product_design_task = self.configured_task(
+            "product_design_task",
+            agent_instance=product_designer,
+            context=[repo_analysis_task],
+            name="product_design_task",
+        )
         module_boundary_task = self.configured_task(
             "module_boundary_task",
             agent_instance=task_planner,
-            context=[repo_analysis_task],
+            context=[repo_analysis_task, product_design_task],
             name="module_boundary_task",
         )
         issue_drafting_task = self.configured_task(
             "issue_drafting_task",
             agent_instance=issue_writer,
-            context=[repo_analysis_task, module_boundary_task],
+            context=[repo_analysis_task, product_design_task, module_boundary_task],
             name="issue_drafting_task",
         )
         workspace_plan_task = self.configured_task(
             "workspace_plan_task",
             agent_instance=task_planner,
-            context=[repo_analysis_task, module_boundary_task, issue_drafting_task],
+            context=[
+                repo_analysis_task,
+                product_design_task,
+                module_boundary_task,
+                issue_drafting_task,
+            ],
             name="workspace_plan_task",
         )
 
-        master_intake_context: list[Task] = []
+        master_intake_context: list[Task] = [product_design_task]
         if not self.bootstrap_fast_track_enabled() and not self.direct_dispatch_enabled():
-            master_intake_context = [repo_analysis_task, module_boundary_task]
+            master_intake_context = [repo_analysis_task, product_design_task, module_boundary_task]
         master_intake_suffix = ""
         if self.direct_dispatch_enabled() and self.execution_mode() == "write":
             master_intake_suffix = (
@@ -856,7 +935,8 @@ class MultiDev:
                 "- 对已有业务仓库，至少补齐这 4 类真实证据之一：`src/**/*.py`、`frontend/src/**/*`、`frontend/**/*`、`tests/**/*.py`；\n"
                 "- 若用户需求已经点名具体能力（例如 `/health`、Hero 文案、购物车按钮、smoke 测试），你应围绕这些能力去定位真实文件，而不是只输出未知项；\n"
                 "- 不得因为某个猜测路径不存在，就把它写成阻塞；若 `frontend/index.html` 不存在，但 `frontend/src/App.jsx` 存在，你应继续围绕真实文件收敛；\n"
-                "- 输出必须压缩：只保留本轮真实需要的证据、风险和可派发结论，不要展开长篇规划。"
+                "- 输出必须压缩：只保留本轮真实需要的证据、风险和可派发结论，不要展开长篇规划；\n"
+                "- 但若产品需求属于零食/零售/购物场景，仍需引用 `product_design` 中的购买主链路结论，确保派单目标贴近转化。"
             )
         master_intake_task = self.configured_task(
             "master_intake_task",
@@ -866,7 +946,7 @@ class MultiDev:
             description_suffix=master_intake_suffix,
         )
 
-        master_dispatch_context = [master_intake_task]
+        master_dispatch_context = [master_intake_task, product_design_task]
         if not self.bootstrap_fast_track_enabled() and not self.direct_dispatch_enabled():
             master_dispatch_context.extend([issue_drafting_task, workspace_plan_task])
         master_dispatch_suffix = ""
@@ -876,6 +956,7 @@ class MultiDev:
                 "- 若 `master_intake` 已拿到真实文件证据，你必须直接派发真实写入 work item；\n"
                 "- 若 `github_enabled=true`，对每个实际派发的 work item 都必须先创建真实 GitHub issue，再把 `github_issue_number` 写入 `dispatch_contract`；\n"
                 "- 对已有业务仓库，`targets` 应尽量收敛到真实现有文件；不得把猜测路径写进派单，也不得让 node 在现有仓库里凭空新建平行实现；\n"
+                "- 若产品需求属于零食/零售/购物场景，优先把 `product_design` 里的购买主链路拆成多个 work item，并充分利用可用 lane；\n"
                 "- 你的正文应保持简短，只保留：派单原则、精简分工表、必要风险；\n"
                 "- 输出末尾必须附带完整 `dispatch_contract` JSON 代码块，且不得省略 `worker_lane`、`branch_name`、`worktree_path`、`github_issue_number`。"
             )
@@ -976,6 +1057,7 @@ class MultiDev:
         reviewer_context = [
             master_intake_task,
             master_dispatch_task,
+            product_design_task,
             *node_execution_tasks,
             execution_summary_task,
         ]
@@ -991,6 +1073,7 @@ class MultiDev:
         master_decision_context = [
             master_intake_task,
             master_dispatch_task,
+            product_design_task,
             *node_execution_tasks,
             execution_summary_task,
             reviewer_audit_task,
@@ -1006,6 +1089,8 @@ class MultiDev:
 
         if self.bootstrap_fast_track_enabled() or self.direct_dispatch_enabled():
             tasks = [
+                repo_analysis_task,
+                product_design_task,
                 master_intake_task,
                 master_dispatch_task,
                 *node_execution_tasks,
@@ -1016,6 +1101,7 @@ class MultiDev:
         else:
             tasks = [
                 repo_analysis_task,
+                product_design_task,
                 module_boundary_task,
                 issue_drafting_task,
                 workspace_plan_task,
@@ -1032,6 +1118,7 @@ class MultiDev:
         agents = [
             master_controller,
             repo_analyst,
+            product_designer,
             task_planner,
             issue_writer,
             developer_worker,

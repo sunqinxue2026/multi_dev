@@ -1,0 +1,71 @@
+name: Snack App Pages
+
+on:
+  push:
+    branches:
+      - main
+      - codex/mature-parallel-dispatch
+    paths:
+      - ".github/workflows/snack-app-pages.yml"
+      - "targets/snack-app/**"
+  pull_request:
+    paths:
+      - ".github/workflows/snack-app-pages.yml"
+      - "targets/snack-app/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: snack-app-pages
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: targets/snack-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Run smoke tests
+        run: PYTHONPATH=src uv run python tests/smoke_test.py
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload static frontend
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: targets/snack-app/frontend
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

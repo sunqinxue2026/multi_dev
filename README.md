@@ -20,7 +20,18 @@ crewai install
 ```
 ### Customizing
 
-**Add your `OPENAI_API_KEY` into the `.env` file**
+**Add your LLM settings into the `.env` file**
+
+You now have two supported paths:
+
+- OpenAI / compatible gateway with key:
+  - `OPENAI_API_KEY=...`
+  - Optional: `OPENAI_MODEL_NAME=...`
+  - Optional: `OPENAI_BASE_URL=...`
+- Ollama or any OpenAI-compatible Ollama gateway:
+  - `OPENAI_BASE_URL=https://ollama-api.office.ihousejapan.cn/v1`
+  - `OPENAI_MODEL_NAME=qwen2.5:7b`
+  - `OPENAI_API_KEY` can be omitted; the app will use a placeholder token internally when only a compatible base URL is provided.
 
 - Modify `src/multi_dev/config/agents.yaml` to define your agents
 - Modify `src/multi_dev/config/tasks.yaml` to define your tasks
@@ -38,6 +49,7 @@ $ crewai run
 This command initializes the multi-dev Crew, assembles the agents, and writes stage outputs to markdown files so you can inspect the pipeline without scrolling through the terminal:
 
 - `outputs/repo_analysis.md`
+- `outputs/product_blueprint.md`
 - `outputs/module_boundaries.md`
 - `outputs/issues.md`
 - `outputs/workspace_plan.md`
@@ -70,6 +82,15 @@ Quick smoke tests are usually faster with `CREW_RUN_MODE=fast`. In fast mode, th
 
 Set `CREW_EXECUTION_MODE=write` if you want backend/frontend/tester nodes to be allowed to modify the target repository through guarded file tools. The default is `plan`, which keeps the workflow in analysis-and-planning mode only.
 
+For Ollama-compatible gateways, the simplest setup is:
+
+```bash
+OPENAI_BASE_URL=https://ollama-api.office.ihousejapan.cn/v1
+OPENAI_MODEL_NAME=qwen2.5:7b
+```
+
+This project will treat that endpoint as an OpenAI-compatible backend and no longer hard-require `OPENAI_API_KEY` if a compatible base URL is present.
+
 For stronger role isolation, you can also set comma-separated path scopes:
 
 - `CREW_BACKEND_PATHS=web-flask,web-file`
@@ -99,6 +120,14 @@ CREW_BACKEND_POOL_SIZE=2
 CREW_FRONTEND_POOL_SIZE=2
 CREW_TESTER_POOL_SIZE=2
 ```
+
+当需求文本明显属于零食/零售/购物场景时，如果你没有手动指定 lane 数量，框架会自动采用更激进的默认并行度：
+
+- `CREW_BACKEND_POOL_SIZE=3`
+- `CREW_FRONTEND_POOL_SIZE=3`
+- `CREW_TESTER_POOL_SIZE=2`
+
+这样 `master` 更容易把“商品发现 / 购物车结算 / 营销复购 / 质量验证”拆成多个可并行 work item。
 
 如果 `master_dispatch.md` 漏写了 `worker_lane`，框架会在 `master_dispatch` 落盘后做一次正规化分配，避免多个 lane 抢同一个 work item。
 
